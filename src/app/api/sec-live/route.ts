@@ -30,6 +30,12 @@ async function fetchFormType(formType: string, from: string) {
       const company = nameNoCik.replace(/\s*\([A-Z0-9\-\.]{1,6}\)\s*$/, '').trim()
       const fileDate = (s.file_date || '').split('T')[0]
 
+      // Build a direct link to the filing's index page on sec.gov from the CIK + accession number
+      const cik = Array.isArray(s.ciks) && s.ciks.length > 0 ? String(s.ciks[0]).replace(/^0+/, '') : null
+      const adsh = s.adsh || ''
+      const adshNoDash = adsh.replace(/-/g, '')
+      const filingUrl = cik && adshNoDash ? `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${adsh}-index.htm` : null
+
       return {
         id: h._id || `${ticker}-${formType}-${fileDate}-${Math.random()}`,
         ticker,
@@ -37,6 +43,7 @@ async function fetchFormType(formType: string, from: string) {
         formType, // Use the requested form type directly - this is guaranteed correct
         fileDate: fileDate || '—',
         periodOfReport: s.period_of_report || '—',
+        filingUrl,
       }
     })
   } catch { return [] }

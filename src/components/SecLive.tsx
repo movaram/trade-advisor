@@ -241,7 +241,7 @@ export default function SecLive() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                  {['Ticker', 'Company', 'Form', 'Impact', 'Date', `Time (${timezone})`, 'Period'].map(h => (
+                  {['Ticker', 'Company', 'Form', 'Impact', 'Date', `Time (${timezone})`, 'Period', 'Doc'].map(h => (
                     <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
@@ -266,6 +266,13 @@ export default function SecLive() {
                       <td style={{ padding: '8px 12px', color: '#6b6b68', whiteSpace: 'nowrap' }}>{f.fileDate}</td>
                       <td style={{ padding: '8px 12px', color: '#9b9b98', whiteSpace: 'nowrap' }}>{timeLabel}</td>
                       <td style={{ padding: '8px 12px', color: '#9b9b98' }}>{f.periodOfReport !== '—' ? f.periodOfReport : ''}</td>
+                      <td style={{ padding: '8px 12px' }}>
+                        {f.filingUrl && (
+                          <a href={f.filingUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', fontSize: 12, textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                            Открыть ↗
+                          </a>
+                        )}
+                      </td>
                     </tr>
                   )
                 })}
