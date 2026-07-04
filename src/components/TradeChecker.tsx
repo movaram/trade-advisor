@@ -377,6 +377,65 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
             )}
           </div>
 
+          {/* Forward Estimates (MarketSmith-style: next 3 quarters + next fiscal years) */}
+          {(financials?.quarterlyEstimates?.length > 0 || financials?.annualEstimates?.length > 0 || financials?.quarterlyEstimatesRestricted) && (
+            <div style={card}>
+              <div style={{ fontWeight: 500, marginBottom: 12 }}>🔮 Forward Estimates (Analyst Consensus)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Next Quarters</div>
+                  {financials.quarterlyEstimates?.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
+                        {['Period','Est. Revenue','Est. EPS'].map(h => (
+                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {financials.quarterlyEstimates.map((e: any, i: number) => (
+                          <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
+                            <td style={{ padding: '6px 8px', fontWeight: 500 }}>{e.date?.substring(0,7)}</td>
+                            <td style={{ padding: '6px 8px' }}>{fmtM(e.revenueAvg)}</td>
+                            <td style={{ padding: '6px 8px' }}>{e.epsAvg!=null?`$${Number(e.epsAvg).toFixed(2)}`:'—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#9b9b98' }}>
+                      {financials.quarterlyEstimatesRestricted ? '⚠️ Недоступно на вашем тарифе FMP (нужен апгрейд подписки)' : 'Нет данных'}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Next Fiscal Years</div>
+                  {financials.annualEstimates?.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
+                        {['Year','Est. Revenue','Est. EPS'].map(h => (
+                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {financials.annualEstimates.map((e: any, i: number) => (
+                          <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
+                            <td style={{ padding: '6px 8px', fontWeight: 500 }}>{e.date?.substring(0,4)}</td>
+                            <td style={{ padding: '6px 8px' }}>{fmtM(e.revenueAvg)}</td>
+                            <td style={{ padding: '6px 8px' }}>{e.epsAvg!=null?`$${Number(e.epsAvg).toFixed(2)}`:'—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#9b9b98' }}>
+                      {financials.annualEstimatesRestricted ? '⚠️ Недоступно на вашем тарифе FMP' : 'Нет данных'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Earnings Surprise */}
           {r.earningsSurprise?.length > 0 && (
             <div style={card}>

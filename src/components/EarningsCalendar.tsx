@@ -39,9 +39,7 @@ export default function EarningsCalendar() {
   }
 
   const filtered = earnings.filter(e =>
-    !filter ||
-    e.symbol?.toLowerCase().includes(filter.toLowerCase()) ||
-    e.company?.toLowerCase().includes(filter.toLowerCase())
+    !filter || e.symbol?.toLowerCase().includes(filter.toLowerCase())
   )
 
   // Group by date
@@ -79,7 +77,7 @@ export default function EarningsCalendar() {
     <div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         <input value={filter} onChange={e => setFilter(e.target.value)}
-          placeholder="Filter by ticker or company..."
+          placeholder="Filter by ticker..."
           style={{ maxWidth: 240, fontSize: 14, height: 36 }} />
         <button onClick={load} disabled={loading}
           style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
@@ -112,7 +110,7 @@ export default function EarningsCalendar() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                  {['Ticker', 'Company', 'When', 'Est. EPS', 'Est. Revenue', 'Last EPS'].map(h => (
+                  {['Ticker', 'When', 'Est. EPS', 'Est. Revenue'].map(h => (
                     <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
                   ))}
                 </tr>
@@ -123,13 +121,11 @@ export default function EarningsCalendar() {
                   return (
                     <tr key={i} style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
                       <td style={{ padding: '8px 12px', fontWeight: 700, color: '#2563eb' }}>{e.symbol}</td>
-                      <td style={{ padding: '8px 12px', color: '#1a1a18' }}>{e.company || '—'}</td>
                       <td style={{ padding: '8px 12px' }}>
                         {tl ? <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: tl.bg, color: tl.color, fontWeight: 500 }}>{tl.label}</span> : '—'}
                       </td>
                       <td style={{ padding: '8px 12px', fontWeight: 500 }}>{e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)}` : '—'}</td>
                       <td style={{ padding: '8px 12px', color: '#6b6b68' }}>{e.revenueEstimated ? `$${(e.revenueEstimated / 1e9).toFixed(2)}B` : '—'}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b6b68' }}>{e.lastYearEPS != null ? `$${Number(e.lastYearEPS).toFixed(2)}` : '—'}</td>
                     </tr>
                   )
                 })}
