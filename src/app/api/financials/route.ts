@@ -6,10 +6,10 @@ export async function POST(req: NextRequest) {
     if (!fmpKey) return NextResponse.json({ quarterlyIncome: [], annualIncome: [], quarterlyEstimates: [], annualEstimates: [] })
 
     const [incomeQ, incomeA, estQ, estA] = await Promise.all([
-      fetch(`https://financialmodelingprep.com/api/v3/income-statement/${ticker}?period=quarter&limit=8&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
-      fetch(`https://financialmodelingprep.com/api/v3/income-statement/${ticker}?limit=5&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
-      fetch(`https://financialmodelingprep.com/api/v3/analyst-estimates/${ticker}?period=quarter&limit=6&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
-      fetch(`https://financialmodelingprep.com/api/v3/analyst-estimates/${ticker}?limit=3&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
+      fetch(`https://financialmodelingprep.com/stable/income-statement?symbol=${ticker}&period=quarter&limit=5&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
+      fetch(`https://financialmodelingprep.com/stable/income-statement?symbol=${ticker}&limit=5&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
+      fetch(`https://financialmodelingprep.com/stable/analyst-estimates?symbol=${ticker}&period=quarter&limit=5&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
+      fetch(`https://financialmodelingprep.com/stable/analyst-estimates?symbol=${ticker}&period=annual&limit=3&apikey=${fmpKey}`).then(r => r.json()).catch(() => []),
     ])
 
     return NextResponse.json({

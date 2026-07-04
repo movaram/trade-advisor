@@ -336,6 +336,7 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
                     {incomeData.map((row: any, i: number) => {
                       const prev = incomeData[i+1]
                       const revG = prev?.revenue ? ((row.revenue-prev.revenue)/Math.abs(prev.revenue)*100) : null
+                      const margin = row.netIncomeRatio ?? (row.revenue ? row.netIncome/row.revenue : null)
                       return (
                         <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
                           <td style={{ padding: '7px 10px', fontWeight: 500, whiteSpace: 'nowrap' }}>{row.date?.substring(0,7)}</td>
@@ -344,16 +345,16 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
                           <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{fmtM(row.grossProfit)}</td>
                           <td style={{ padding: '7px 10px', color: (row.netIncome||0)>=0?'#16a34a':'#dc2626', fontWeight: 500 }}>{fmtM(row.netIncome)}</td>
                           <td style={{ padding: '7px 10px', fontWeight: 500 }}>{row.eps!=null?`$${Number(row.eps).toFixed(2)}`:'—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{row.netIncomeRatio!=null?(row.netIncomeRatio*100).toFixed(1)+'%':'—'}</td>
+                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{margin!=null?(margin*100).toFixed(1)+'%':'—'}</td>
                         </tr>
                       )
                     })}
                     {estimates.slice(0,3).map((est: any, i: number) => (
                       <tr key={`e${i}`} style={{ background: '#f8f8f7', borderBottom: '1px solid #e5e5e3', opacity: 0.8 }}>
                         <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{est.date?.substring(0,7)} <span style={{ fontSize:10, background:'#e5e5e3', borderRadius:3, padding:'1px 4px' }}>est</span></td>
-                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{fmtM(est.estimatedRevenueAvg)}</td>
+                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{fmtM(est.revenueAvg ?? est.estimatedRevenueAvg)}</td>
                         <td colSpan={3} style={{ padding: '7px 10px', color: '#9b9b98' }}>—</td>
-                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{est.estimatedEpsAvg!=null?`$${Number(est.estimatedEpsAvg).toFixed(2)}`:'—'}</td>
+                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{(est.epsAvg ?? est.estimatedEpsAvg)!=null?`$${Number(est.epsAvg ?? est.estimatedEpsAvg).toFixed(2)}`:'—'}</td>
                         <td style={{ padding: '7px 10px', color: '#9b9b98' }}>—</td>
                       </tr>
                     ))}

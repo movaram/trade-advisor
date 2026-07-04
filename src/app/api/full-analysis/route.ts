@@ -4,7 +4,8 @@ const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 
 async function fmp(path: string, key: string) {
   try {
-    const r = await fetch(`https://financialmodelingprep.com/api/v3/${path}&apikey=${key}`)
+    const sep = path.includes('?') ? '&' : '?'
+    const r = await fetch(`https://financialmodelingprep.com/stable/${path}${sep}apikey=${key}`)
     if (!r.ok) return null
     const d = await r.json()
     return Array.isArray(d) ? d : (d && typeof d === 'object' ? d : null)
@@ -52,36 +53,52 @@ export async function POST(req: NextRequest) {
         stockGrade: any[] = [], companyProfile: any = null, priceHistory: any[] = [],
         sectorPerf: any = null
 
+    let quoteYearHigh: number | null = null, quoteYearLow: number | null = null
+
     if (fmpKey) {
+      // Most recently completed calendar quarter, for institutional ownership lookups
+      const now = new Date()
+      const qNow = Math.floor(now.getMonth() / 3) + 1
+      const instQuarter = qNow === 1 ? 4 : qNow - 1
+      const instYear = qNow === 1 ? now.getFullYear() - 1 : now.getFullYear()
+
+      const from365 = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
       const [surp, inst, grade, prof, hist, quote] = await Promise.allSettled([
-        fmp(`earnings-surprises/${sym}?`, fmpKey),
-        fmp(`institutional-holder/${sym}?`, fmpKey),
-        fmp(`grade/${sym}?limit=30`, fmpKey),
-        fmp(`profile/${sym}?`, fmpKey),
-        fmp(`historical-price-full/${sym}?serietype=line&timeseries=365`, fmpKey),
-        fmp(`quote/${sym}?`, fmpKey),
+        fmp(`earnings?symbol=${sym}&limit=5`, fmpKey),
+        fmp(`institutional-ownership/extract?symbol=${sym}&year=${instYear}&quarter=${instQuarter}`, fmpKey),
+        fmp(`grades?symbol=${sym}&limit=30`, fmpKey),
+        fmp(`profile?symbol=${sym}`, fmpKey),
+        fmp(`historical-price-eod/full?symbol=${sym}&from=${from365}&to=${to}`, fmpKey),
+        fmp(`quote?symbol=${sym}`, fmpKey),
       ])
 
-      earningsSurprise = surp.status === 'fulfilled' && Array.isArray(surp.value) ? surp.value.slice(0,8) : []
+      const earningsRaw = surp.status === 'fulfilled' && Array.isArray(surp.value) ? surp.value : []
+      earningsSurprise = earningsRaw
+        .filter((e: any) => e.epsActual != null)
+        .map((e: any) => ({ date: e.date, actual: e.epsActual, estimate: e.epsEstimated, revenueActual: e.revenueActual, revenueEstimated: e.revenueEstimated }))
+        .slice(0, 8)
       institutionalOwnership = inst.status === 'fulfilled' && Array.isArray(inst.value) ? inst.value.slice(0,8) : []
       stockGrade = grade.status === 'fulfilled' && Array.isArray(grade.value) ? grade.value : []
-      
+
       const profArr = prof.status === 'fulfilled' ? prof.value : null
       companyProfile = Array.isArray(profArr) ? profArr[0] : profArr
 
       const histData = hist.status === 'fulfilled' ? hist.value : null
-      priceHistory = histData?.historical || []
+      priceHistory = Array.isArray(histData) ? histData : []
 
-      // Get current price from quote if not in profile
+      // Get current price / 52-week range from quote (more reliable than profile)
       const quoteData = quote.status === 'fulfilled' ? quote.value : null
       const quoteArr = Array.isArray(quoteData) ? quoteData[0] : quoteData
       if (quoteArr?.price && companyProfile) companyProfile.price = quoteArr.price
+      if (quoteArr?.yearHigh) quoteYearHigh = quoteArr.yearHigh
+      if (quoteArr?.yearLow) quoteYearLow = quoteArr.yearLow
     }
 
     // Calculate price metrics
     const currentPrice = companyProfile?.price || null
-    const w52High = metrics?.metric?.['52WeekHigh'] || (priceHistory.length > 0 ? Math.max(...priceHistory.map((d:any)=>d.close)) : null)
-    const w52Low = metrics?.metric?.['52WeekLow'] || (priceHistory.length > 0 ? Math.min(...priceHistory.map((d:any)=>d.close)) : null)
+    const w52High = quoteYearHigh || metrics?.metric?.['52WeekHigh'] || (priceHistory.length > 0 ? Math.max(...priceHistory.map((d:any)=>d.close)) : null)
+    const w52Low = quoteYearLow || metrics?.metric?.['52WeekLow'] || (priceHistory.length > 0 ? Math.min(...priceHistory.map((d:any)=>d.close)) : null)
     
     let high52Pct = null, low52Pct = null
     if (currentPrice && w52High) high52Pct = ((currentPrice - w52High) / w52High * 100).toFixed(1)
@@ -105,9 +122,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Fallback RS from Finnhub metrics
-    if (!rs1m) rs1m = metrics?.metric?.['1MonthPriceReturnDaily']
-    if (!rs3m) rs3m = metrics?.metric?.['3MonthPriceReturnDaily']
-    if (!rsYtd) rsYtd = metrics?.metric?.['yearToDatePriceReturn']
+    if (!rs1m) rs1m = metrics?.metric?.['monthToDatePriceReturnDaily']
+    if (!rs3m) rs3m = metrics?.metric?.['13WeekPriceReturnDaily']
+    if (!rsYtd) rsYtd = metrics?.metric?.['yearToDatePriceReturnDaily']
 
     // Recent analyst grade changes (30 days)
     const recentGrades = stockGrade.filter((g:any) => {
