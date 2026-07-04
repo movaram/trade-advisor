@@ -9,40 +9,57 @@ export default function KeysPanel() {
   const [fmp, setFmp] = useState(keys.fmp || '')
   const [anthropic, setAnthropic] = useState(keys.anthropic || '')
   const [saved, setSaved] = useState(false)
+  const [open, setOpen] = useState(!(keys.finnhub || keys.fmp || keys.massive || keys.anthropic))
+
+  const filledCount = [keys.massive, keys.finnhub, keys.fmp, keys.anthropic].filter(Boolean).length
 
   function save() {
     setKeys({ massive, finnhub, fmp, anthropic })
     setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setTimeout(() => setSaved(false), 1500)
+    setOpen(false)
   }
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>API Keys</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Massive / Polygon</div>
-          <input type="password" value={massive} onChange={e => setMassive(e.target.value)} placeholder="Paste key..." />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: open ? 10 : 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>API Keys</span>
+          {!open && (
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{filledCount}/4 saved</span>
+          )}
         </div>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Finnhub</div>
-          <input type="password" value={finnhub} onChange={e => setFinnhub(e.target.value)} placeholder="Paste key..." />
-        </div>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>FMP (Financial Modeling Prep)</div>
-          <input type="password" value={fmp} onChange={e => setFmp(e.target.value)} placeholder="Paste key..." />
-        </div>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Anthropic (AI chat)</div>
-          <input type="password" value={anthropic} onChange={e => setAnthropic(e.target.value)} placeholder="Paste key..." />
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button onClick={save} style={{ background: 'var(--text)', color: '#fff', padding: '6px 18px', fontSize: 13 }}>
-          {saved ? 'Saved ✓' : 'Save keys'}
+        <button onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none', color: 'var(--text-2)', fontSize: 12, cursor: 'pointer', padding: '2px 6px' }}>
+          {open ? 'Hide ▲' : 'Show ▼'}
         </button>
-        <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Keys stay in your browser only — never stored anywhere.</span>
       </div>
+
+      {open && <>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Massive / Polygon</div>
+            <input type="password" value={massive} onChange={e => setMassive(e.target.value)} placeholder="Paste key..." />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Finnhub</div>
+            <input type="password" value={finnhub} onChange={e => setFinnhub(e.target.value)} placeholder="Paste key..." />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>FMP (Financial Modeling Prep)</div>
+            <input type="password" value={fmp} onChange={e => setFmp(e.target.value)} placeholder="Paste key..." />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Anthropic (AI chat)</div>
+            <input type="password" value={anthropic} onChange={e => setAnthropic(e.target.value)} placeholder="Paste key..." />
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={save} style={{ background: 'var(--text)', color: '#fff', padding: '6px 18px', fontSize: 13 }}>
+            {saved ? 'Saved ✓' : 'Save keys'}
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Keys stay in your browser only — never stored anywhere.</span>
+        </div>
+      </>}
     </div>
   )
 }
