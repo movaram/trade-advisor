@@ -17,23 +17,18 @@ async function fetchFormType(formType: string, from: string) {
       const s = h._source || {}
       const displayNames = Array.isArray(s.display_names) ? s.display_names : (s.display_names ? [s.display_names] : [])
       const rawName = displayNames[0] || s.entity_name || '—'
-      
+
+      // EDGAR appends "(CIK #######)" after the ticker, e.g. "Apple Inc (AAPL) (CIK 0000320193)" —
+      // strip that first so the ticker regex can anchor on the real end of the string.
+      const nameNoCik = String(rawName).replace(/\s*\(CIK\s*[\d]+\)\s*/gi, ' ').trim()
+
       // Extract ticker from (TICKER) pattern
-      const tickerMatch = String(rawName).match(/\(([A-Z0-9\-\.]{1,6})\)\s*$/)
+      const tickerMatch = nameNoCik.match(/\(([A-Z0-9\-\.]{1,6})\)\s*$/)
       const tickersArr = Array.isArray(s.tickers) ? s.tickers : []
       const ticker = tickersArr.length > 0 ? tickersArr[0].toUpperCase() : (tickerMatch ? tickerMatch[1] : '—')
-      
-      const company = String(rawName).replace(/\s*\([A-Z0-9\-\.]{1,6}\)\s*$/g, '').replace(/\s*\(CIK\s*[\d]+\)/gi, '').trim()
-      const fileDate = (s.file_date || '').split('T')[0]
 
-      let filedTimeET = '—', filedTimeAM = '—'
-      if (fileDate) {
-        const d = new Date(fileDate + 'T09:30:00-05:00')
-        if (!isNaN(d.getTime())) {
-          filedTimeET = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/New_York' }) + ' ET'
-          filedTimeAM = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Yerevan' }) + ' AM'
-        }
-      }
+      const company = nameNoCik.replace(/\s*\([A-Z0-9\-\.]{1,6}\)\s*$/, '').trim()
+      const fileDate = (s.file_date || '').split('T')[0]
 
       return {
         id: h._id || `${ticker}-${formType}-${fileDate}-${Math.random()}`,
@@ -41,8 +36,6 @@ async function fetchFormType(formType: string, from: string) {
         company,
         formType, // Use the requested form type directly - this is guaranteed correct
         fileDate: fileDate || '—',
-        filedTimeET,
-        filedTimeAM,
         periodOfReport: s.period_of_report || '—',
       }
     })

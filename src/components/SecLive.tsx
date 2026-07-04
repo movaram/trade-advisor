@@ -1,7 +1,25 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import { useKeys } from '@/lib/keys'
 
 const ALL_FORM_TYPES = ['8-K', '10-Q', '10-K', '4', 'S-1', 'SC 13G', 'SC 13D']
+const VISIBLE_LIMIT = 30
+
+// Convert an SEC/Finnhub wall-clock timestamp (always US Eastern Time) into a real Date,
+// correctly handling EST/EDT — Finnhub's acceptedDate has no timezone marker of its own.
+function etOffsetMinutes(instant: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' }).formatToParts(instant)
+  const tzName = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT-5'
+  const m = tzName.match(/GMT([+-]\d+)/)
+  return m ? parseInt(m[1], 10) * 60 : -300
+}
+function etWallClockToDate(s: string): Date | null {
+  if (!s) return null
+  const guess = new Date(s.replace(' ', 'T') + 'Z')
+  if (isNaN(guess.getTime())) return null
+  const offsetMin = etOffsetMinutes(guess)
+  return new Date(guess.getTime() - offsetMin * 60000)
+}
 
 const FORM_STYLE: Record<string, { bg: string; color: string; impact: string; impactColor: string }> = {
   '8-K':    { bg: '#fef2f2', color: '#dc2626', impact: '🔴 High impact', impactColor: '#dc2626' },
@@ -25,6 +43,7 @@ function FormBadge({ type }: { type: string }) {
 }
 
 export default function SecLive() {
+  const { keys } = useKeys()
   const [allFilings, setAllFilings] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
@@ -35,6 +54,7 @@ export default function SecLive() {
   const [newCount, setNewCount] = useState(0)
   const [activeTab, setActiveTab] = useState('all')
   const [timezone, setTimezone] = useState<'ET' | 'AM'>('ET')
+  const [realTimes, setRealTimes] = useState<Record<string, any[]>>({})
   const intervalRef = useRef<any>(null)
   const countdownRef = useRef<any>(null)
   const prevIdsRef = useRef<Set<string>>(new Set())
@@ -83,6 +103,45 @@ export default function SecLive() {
     const matchesTab = activeTab === 'all' || f.formType === activeTab
     return matchesSearch && matchesTab
   })
+
+  // Exact filing time comes from Finnhub and is only fetched for the rows actually shown,
+  // to stay well under Finnhub's free-tier rate limit.
+  const visible = filtered.slice(0, VISIBLE_LIMIT)
+
+  useEffect(() => {
+    if (!keys.finnhub) return
+    const tickers = Array.from(new Set(visible.map(f => f.ticker))).filter(t => t && t !== '—' && !realTimes[t])
+    if (tickers.length === 0) return
+    fetch('/api/sec-filing-times', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers, finnhubKey: keys.finnhub })
+    }).then(r => r.json()).then(data => {
+      if (data.times) setRealTimes(prev => ({ ...prev, ...data.times }))
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible.map(f => f.ticker).join(','), keys.finnhub])
+
+  function getRealTime(f: any): Date | null {
+    const list = realTimes[f.ticker]
+    if (!list) return null
+    const candidates = list.filter((x: any) => x.form === f.formType)
+    if (candidates.length === 0) return null
+
+    // EDGAR's search-index file_date and Finnhub's filedDate occasionally disagree by a day
+    // (different indexing conventions), so prefer an exact match but allow a small tolerance.
+    const exact = candidates.find((x: any) => x.filedDate?.startsWith(f.fileDate))
+    const targetTime = new Date(f.fileDate).getTime()
+    const nearest = exact || candidates.reduce((best: any, c: any) => {
+      const diff = Math.abs(new Date(c.filedDate).getTime() - targetTime)
+      const bestDiff = best ? Math.abs(new Date(best.filedDate).getTime() - targetTime) : Infinity
+      return diff < bestDiff ? c : best
+    }, null)
+    if (!nearest) return null
+    const diffDays = Math.abs(new Date(nearest.filedDate).getTime() - targetTime) / 86400000
+    if (diffDays > 2) return null
+
+    return etWallClockToDate(nearest.acceptedDate)
+  }
 
   const countByType = ALL_FORM_TYPES.reduce((acc, t) => {
     acc[t] = allFilings.filter(f => f.formType === t).length
@@ -169,39 +228,56 @@ export default function SecLive() {
         ))}
       </div>
 
+      {!keys.finnhub && filtered.length > 0 && (
+        <div style={{ background: '#fffbeb', color: '#d97706', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
+          ⚠️ Добавьте Finnhub API ключ выше, чтобы видеть точное время подачи (иначе показывается только дата).
+        </div>
+      )}
+
       {/* Table */}
       {filtered.length > 0 ? (
-        <div style={{ background: '#fff', border: '1px solid #e5e5e3', borderRadius: 12, overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                {['Ticker', 'Company', 'Form', 'Impact', 'Date', `Time (${timezone})`, 'Period'].map(h => (
-                  <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((f: any, i: number) => {
-                const fs = FORM_STYLE[f.formType]
-                const isHighImpact = f.formType === '8-K'
-                return (
-                  <tr key={i} style={{
-                    borderBottom: i < filtered.length - 1 ? '1px solid #e5e5e3' : 'none',
-                    background: isHighImpact ? '#fff8f8' : 'transparent'
-                  }}>
-                    <td style={{ padding: '8px 12px', fontWeight: 700, color: f.ticker !== '—' ? '#2563eb' : '#9b9b98' }}>{f.ticker}</td>
-                    <td style={{ padding: '8px 12px', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.company}>{f.company}</td>
-                    <td style={{ padding: '8px 12px' }}><FormBadge type={f.formType} /></td>
-                    <td style={{ padding: '8px 12px', fontSize: 11, color: fs?.impactColor || '#9b9b98', whiteSpace: 'nowrap' }}>{fs?.impact || '—'}</td>
-                    <td style={{ padding: '8px 12px', color: '#6b6b68', whiteSpace: 'nowrap' }}>{f.fileDate}</td>
-                    <td style={{ padding: '8px 12px', color: '#9b9b98', whiteSpace: 'nowrap' }}>{timezone === 'ET' ? f.filedTimeET : f.filedTimeAM}</td>
-                    <td style={{ padding: '8px 12px', color: '#9b9b98' }}>{f.periodOfReport !== '—' ? f.periodOfReport : ''}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div style={{ background: '#fff', border: '1px solid #e5e5e3', borderRadius: 12, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
+                  {['Ticker', 'Company', 'Form', 'Impact', 'Date', `Time (${timezone})`, 'Period'].map(h => (
+                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((f: any, i: number) => {
+                  const fs = FORM_STYLE[f.formType]
+                  const isHighImpact = f.formType === '8-K'
+                  const realTime = getRealTime(f)
+                  const timeLabel = realTime
+                    ? realTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: timezone === 'ET' ? 'America/New_York' : 'Asia/Yerevan' }) + (timezone === 'ET' ? ' ET' : ' AM')
+                    : (f.ticker === '—' || !keys.finnhub || realTimes[f.ticker] ? '—' : '…')
+                  return (
+                    <tr key={i} style={{
+                      borderBottom: i < visible.length - 1 ? '1px solid #e5e5e3' : 'none',
+                      background: isHighImpact ? '#fff8f8' : 'transparent'
+                    }}>
+                      <td style={{ padding: '8px 12px', fontWeight: 700, color: f.ticker !== '—' ? '#2563eb' : '#9b9b98' }}>{f.ticker}</td>
+                      <td style={{ padding: '8px 12px', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.company}>{f.company}</td>
+                      <td style={{ padding: '8px 12px' }}><FormBadge type={f.formType} /></td>
+                      <td style={{ padding: '8px 12px', fontSize: 11, color: fs?.impactColor || '#9b9b98', whiteSpace: 'nowrap' }}>{fs?.impact || '—'}</td>
+                      <td style={{ padding: '8px 12px', color: '#6b6b68', whiteSpace: 'nowrap' }}>{f.fileDate}</td>
+                      <td style={{ padding: '8px 12px', color: '#9b9b98', whiteSpace: 'nowrap' }}>{timeLabel}</td>
+                      <td style={{ padding: '8px 12px', color: '#9b9b98' }}>{f.periodOfReport !== '—' ? f.periodOfReport : ''}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {filtered.length > VISIBLE_LIMIT && (
+            <div style={{ textAlign: 'center', padding: '10px 0', fontSize: 12, color: '#9b9b98' }}>
+              Показаны последние {VISIBLE_LIMIT} из {filtered.length}. Сузьте поиск или временной диапазон, чтобы увидеть остальные.
+            </div>
+          )}
+        </>
       ) : (
         <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#9b9b98', fontSize: 14 }}>
           {loading ? 'Loading filings...' : 'No filings found. Try expanding the time range or changing filters.'}
