@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
     ).then(r => r.json()).catch(() => ({ hits: { hits: [] } }))
 
     // FMP calls
-    let earningsSurprise: any[] = [], institutionalOwnership: any[] = [],
+    let institutionalOwnership: any[] = [],
         stockGrade: any[] = [], companyProfile: any = null,
         gradesConsensus: any = null, priceTargetConsensus: any = null,
         priceTargetSummary: any = null, gradesHistorical: any[] = []
@@ -63,8 +63,7 @@ export async function POST(req: NextRequest) {
       const instQuarter = qNow === 1 ? 4 : qNow - 1
       const instYear = qNow === 1 ? now.getFullYear() - 1 : now.getFullYear()
 
-      const [surp, inst, grade, prof, quote, gConsensus, ptConsensus, ptSummary, gHistorical] = await Promise.allSettled([
-        fmp(`earnings?symbol=${sym}&limit=5`, fmpKey),
+      const [inst, grade, prof, quote, gConsensus, ptConsensus, ptSummary, gHistorical] = await Promise.allSettled([
         fmp(`institutional-ownership/extract?symbol=${sym}&year=${instYear}&quarter=${instQuarter}`, fmpKey),
         fmp(`grades?symbol=${sym}&limit=30`, fmpKey),
         fmp(`profile?symbol=${sym}`, fmpKey),
@@ -75,11 +74,6 @@ export async function POST(req: NextRequest) {
         fmp(`grades-historical?symbol=${sym}&limit=6`, fmpKey),
       ])
 
-      const earningsRaw = surp.status === 'fulfilled' && Array.isArray(surp.value) ? surp.value : []
-      earningsSurprise = earningsRaw
-        .filter((e: any) => e.epsActual != null)
-        .map((e: any) => ({ date: e.date, actual: e.epsActual, estimate: e.epsEstimated, revenueActual: e.revenueActual, revenueEstimated: e.revenueEstimated }))
-        .slice(0, 8)
       institutionalOwnership = inst.status === 'fulfilled' && Array.isArray(inst.value) ? inst.value.slice(0,8) : []
       stockGrade = grade.status === 'fulfilled' && Array.isArray(grade.value) ? grade.value : []
 
@@ -130,7 +124,6 @@ export async function POST(req: NextRequest) {
       priceTarget: priceTarget || {},
       earnings: Array.isArray(earnings) ? earnings : [],
       filings: secData?.hits?.hits || [],
-      earningsSurprise,
       institutionalOwnership,
       recentGrades,
       companyProfile,

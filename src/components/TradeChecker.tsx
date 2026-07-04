@@ -259,39 +259,6 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
             </div>
           )}
 
-          {/* Earnings Surprise */}
-          {r.earningsSurprise?.length > 0 && (
-            <div style={card}>
-              <div style={{ fontWeight: 500, marginBottom: 12 }}>📊 Earnings Surprise</div>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                  <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
-                    {['Date','Actual EPS','Estimate','Surprise','Surprise %'].map(h => (
-                      <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {r.earningsSurprise.slice(0,6).map((e: any, i: number) => {
-                      const actual = e.actualEarningResult ?? e.actual
-                      const est = e.estimatedEarning ?? e.estimate
-                      const surprise = actual!=null&&est!=null ? actual-est : null
-                      const surprisePct = surprise!=null&&est ? (surprise/Math.abs(est)*100) : null
-                      return (
-                        <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
-                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{e.date||e.period}</td>
-                          <td style={{ padding: '7px 10px', fontWeight: 500 }}>{actual!=null?`$${Number(actual).toFixed(2)}`:'N/A'}</td>
-                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{est!=null?`$${Number(est).toFixed(2)}`:'N/A'}</td>
-                          <td style={{ padding: '7px 10px', color: surprise!=null?pctColor(surprise):'#1a1a18', fontWeight: 500 }}>{surprise!=null?(surprise>=0?'+':'')+surprise.toFixed(2):'N/A'}</td>
-                          <td style={{ padding: '7px 10px', fontWeight: 700, color: surprisePct!=null?pctColor(surprisePct):'#1a1a18' }}>{surprisePct!=null?fmtPct(surprisePct):'N/A'}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
           {/* Analyst Ratings */}
           <div style={card}>
             <div style={{ fontWeight: 500, marginBottom: 12 }}>🎯 Analyst Ratings & Price Targets</div>
