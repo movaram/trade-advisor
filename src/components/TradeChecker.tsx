@@ -2,7 +2,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useKeys } from '@/lib/keys'
 import Badge from './Badge'
+import Markdown from './Markdown'
 import { detectCatalysts, catalystScore, fmt } from '@/lib/api'
+import { AI_SYSTEM_PROMPT, TICKER_PROMPTS } from '@/lib/prompts'
 
 const card: React.CSSProperties = { background: '#fff', border: '1px solid #e5e5e3', borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1rem' }
 const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #e5e5e3' }
@@ -140,45 +142,52 @@ export default function TradeChecker({ initialTicker = '' }: { initialTicker?: s
     } catch {}
   }
 
+  async function callAi(system: string | undefined, messages: { role: string; content: string }[], maxTokens = 1200): Promise<{ text?: string; error?: string }> {
+    if (!keys.anthropic) return { error: 'Добавьте Anthropic API ключ в панель ключей выше, чтобы использовать AI.' }
+    try {
+      const res = await fetch('/api/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anthropicKey: keys.anthropic, system, messages, maxTokens })
+      })
+      const d = await res.json()
+      if (d.error) return { error: d.error }
+      return { text: d.text }
+    } catch (e: any) { return { error: e.message || 'Network error' } }
+  }
+
   async function generateAiAnalysis(sym: string, data: any) {
     setAiLoading(true)
-    try {
-      const prompt = `Stock analyst for ${sym}. Be concise. Respond ONLY with JSON:
+    const prompt = `Stock analyst for ${sym}. Be concise. Respond ONLY with JSON:
 {"bull_case_ru":"2 sentences bull case in Russian","bear_case_ru":"2 sentences bear case in Russian","description_ru":"2 sentences: what company does + main products in Russian"}
 Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.news||[]).slice(0,3).map((n:any)=>n.headline).join(' | ')}`
-
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 600, messages: [{ role: 'user', content: prompt }] })
-      })
-      const d = await r.json()
-      const text = d.content?.[0]?.text || '{}'
-      setAiAnalysis(JSON.parse(text.replace(/```json|```/g, '').trim()))
-    } catch {}
+    const { text } = await callAi(undefined, [{ role: 'user', content: prompt }], 600)
+    if (text) {
+      try { setAiAnalysis(JSON.parse(text.replace(/```json|```/g, '').trim())) } catch {}
+    }
     setAiLoading(false)
   }
 
-  async function sendChat() {
-    if (!chatInput.trim() || !result) return
-    const userMsg = chatInput.trim(); setChatInput('')
+  async function sendChat(overrideMsg?: string) {
+    const userMsg = (overrideMsg ?? chatInput).trim()
+    if (!userMsg || !result) return
+    if (overrideMsg == null) setChatInput('')
     const newMessages = [...chatMessages, { role: 'user', content: userMsg }]
     setChatMessages(newMessages); setChatLoading(true)
-    try {
-      const context = `Stock: ${result.ticker} (${result.profile?.name}), Industry: ${result.profile?.finnhubIndustry}, PE: ${result.metrics?.peNormalizedAnnual || 'N/A'}, EPS: ${result.metrics?.epsNormalizedAnnual || 'N/A'}, Net Margin: ${result.metrics?.netProfitMarginTTM || 'N/A'}%, News: ${(result.news||[]).slice(0,3).map((n:any)=>n.headline).join(' | ')}`
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6', max_tokens: 800,
-          system: `You are a professional swing trading analyst. Answer questions about stocks concisely in Russian. Context: ${context}`,
-          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
-        })
-      })
-      const d = await r.json()
-      const reply = d.content?.[0]?.text || 'Не удалось получить ответ'
-      setChatMessages([...newMessages, { role: 'assistant', content: reply }])
-    } catch { setChatMessages([...newMessages, { role: 'assistant', content: 'Ошибка запроса' }]) }
+    const context = `Stock: ${result.ticker} (${result.profile?.name}), Industry: ${result.profile?.finnhubIndustry}, PE: ${result.metrics?.peNormalizedAnnual || 'N/A'}, EPS: ${result.metrics?.epsNormalizedAnnual || 'N/A'}, Net Margin: ${result.metrics?.netProfitMarginTTM || 'N/A'}%, News: ${(result.news||[]).slice(0,3).map((n:any)=>n.headline).join(' | ')}`
+    const { text, error } = await callAi(`${AI_SYSTEM_PROMPT}\n\nContext about the stock: ${context}`, newMessages.map(m => ({ role: m.role, content: m.content })), 2000)
+    setChatMessages([...newMessages, { role: 'assistant', content: text || `Ошибка: ${error}` }])
     setChatLoading(false)
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+  }
+
+  function runPreset(def: typeof TICKER_PROMPTS[number]) {
+    if (!result) return
+    let date: string | undefined
+    if (def.needsDate) {
+      date = window.prompt('Введите дату гэпа, например 2026-05-12:') || undefined
+      if (!date) return
+    }
+    sendChat(def.build(result.ticker, date))
   }
 
   const r = result
@@ -533,12 +542,23 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
           {/* AI Chat */}
           <div style={{ ...card, marginBottom: 0 }}>
             <div style={{ fontWeight: 500, marginBottom: 10, fontSize: 13 }}>💬 Ask AI about {r.ticker}</div>
+            {!keys.anthropic && (
+              <div style={{ fontSize: 12, color: '#9b9b98', marginBottom: 10 }}>⚠️ Добавьте Anthropic API ключ в панель ключей выше, чтобы использовать AI-разбор и чат.</div>
+            )}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {TICKER_PROMPTS.map(p => (
+                <button key={p.id} onClick={() => runPreset(p)} disabled={chatLoading || !keys.anthropic}
+                  style={{ background: '#f1f5f9', color: '#1a1a18', padding: '5px 12px', borderRadius: 999, border: '1px solid #e5e5e3', cursor: 'pointer', fontSize: 12 }}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
             {chatMessages.length > 0 && (
-              <div style={{ maxHeight: 300, overflowY: 'auto', marginBottom: 10, padding: '8px 0' }}>
+              <div style={{ maxHeight: 420, overflowY: 'auto', marginBottom: 10, padding: '8px 0' }}>
                 {chatMessages.map((m, i) => (
                   <div key={i} style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', alignItems: m.role==='user'?'flex-end':'flex-start' }}>
-                    <div style={{ maxWidth: '80%', padding: '8px 12px', borderRadius: 10, background: m.role==='user'?'#1a1a18':'#f1f5f9', color: m.role==='user'?'#fff':'#1a1a18', fontSize: 13, lineHeight: 1.6 }}>
-                      {m.content}
+                    <div style={{ maxWidth: m.role==='user'?'80%':'100%', padding: '8px 12px', borderRadius: 10, background: m.role==='user'?'#1a1a18':'#f1f5f9', color: m.role==='user'?'#fff':'#1a1a18', fontSize: 13, lineHeight: 1.6 }}>
+                      {m.role === 'assistant' ? <Markdown text={m.content} /> : m.content}
                     </div>
                   </div>
                 ))}
@@ -550,7 +570,7 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
               <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                 onKeyDown={e => e.key==='Enter' && !e.shiftKey && sendChat()}
                 placeholder="Задай вопрос о компании или сделке..." style={{ flex: 1, fontSize: 13 }} />
-              <button onClick={sendChat} disabled={chatLoading || !chatInput.trim()}
+              <button onClick={() => sendChat()} disabled={chatLoading || !chatInput.trim()}
                 style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 38, borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, flexShrink: 0 }}>
                 Send
               </button>

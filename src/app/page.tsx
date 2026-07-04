@@ -6,8 +6,9 @@ import TradeChecker from '@/components/TradeChecker'
 import CatalystScanner from '@/components/CatalystScanner'
 import SecLive from '@/components/SecLive'
 import EarningsCalendar from '@/components/EarningsCalendar'
+import MarketBrief from '@/components/MarketBrief'
 
-const TABS = ['Trade checker', 'Catalyst scanner', 'SEC live', 'Earnings calendar']
+const TABS = ['Trade checker', 'Catalyst scanner', 'SEC live', 'Earnings calendar', 'Market brief']
 
 export default function Home() {
   const [tab, setTab] = useState(0)
@@ -48,6 +49,7 @@ export default function Home() {
           {tab === 1 && <CatalystScanner onDeepDive={handleDeepDive} />}
           {tab === 2 && <SecLive />}
           {tab === 3 && <EarningsCalendar />}
+          {tab === 4 && <MarketBrief />}
         </div>
       </main>
     </KeysProvider>
