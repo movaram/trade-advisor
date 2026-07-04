@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useKeys } from '@/lib/keys'
 import Badge from './Badge'
 import Markdown from './Markdown'
-import { detectCatalysts, catalystScore, fmt } from '@/lib/api'
+import { detectCatalysts, catalystScore } from '@/lib/api'
 import { AI_SYSTEM_PROMPT, TICKER_PROMPTS } from '@/lib/prompts'
 
 const card: React.CSSProperties = { background: '#fff', border: '1px solid #e5e5e3', borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1rem' }
@@ -27,14 +27,6 @@ function fmtPct(val: any) {
   if (val == null || isNaN(Number(val))) return 'N/A'
   const n = Number(val); return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'
 }
-function fmtM(val: any) {
-  if (val == null || isNaN(Number(val))) return '—'
-  const n = Number(val)
-  if (Math.abs(n) >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B'
-  if (Math.abs(n) >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M'
-  return '$' + n.toFixed(0)
-}
-
 // TheFly-style news icons
 function getNewsIcon(headline: string): { icon: string; color: string } {
   const h = headline.toLowerCase()
@@ -62,8 +54,6 @@ export default function TradeChecker({ initialTicker = '' }: { initialTicker?: s
   const [error, setError] = useState('')
   const [aiAnalysis, setAiAnalysis] = useState<any>(null)
   const [aiLoading, setAiLoading] = useState(false)
-  const [financials, setFinancials] = useState<any>(null)
-  const [finPeriod, setFinPeriod] = useState<'Q' | 'A'>('Q')
   const [history, setHistory] = useState<any[]>([])
   const [chatMessages, setChatMessages] = useState<{ role: string; content: string }[]>([])
   const [chatInput, setChatInput] = useState('')
@@ -109,12 +99,11 @@ export default function TradeChecker({ initialTicker = '' }: { initialTicker?: s
       const catalysts = detectCatalysts(cached.filings, cached.insiders, cached.news, cached.sentiment, cached.recs)
       const score = catalystScore(catalysts)
       setResult({ ...cached, catalysts, score, ticker: sym })
-      loadFinancials(sym)
       generateAiAnalysis(sym, cached)
       return
     }
 
-    setLoading(true); setResult(null); setFinancials(null)
+    setLoading(true); setResult(null)
     try {
       const data = await fetch('/api/full-analysis', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -125,21 +114,9 @@ export default function TradeChecker({ initialTicker = '' }: { initialTicker?: s
       const score = catalystScore(catalysts)
       setResult({ ...data, catalysts, score, ticker: sym })
       saveToHistory(sym, data)
-      loadFinancials(sym)
       generateAiAnalysis(sym, data)
     } catch (e: any) { setError('Error: ' + e.message) }
     setLoading(false)
-  }
-
-  async function loadFinancials(sym: string) {
-    if (!keys.fmp) return
-    try {
-      const data = await fetch('/api/financials', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: sym, fmpKey: keys.fmp })
-      }).then(r => r.json())
-      setFinancials(data)
-    } catch {}
   }
 
   async function callAi(system: string | undefined, messages: { role: string; content: string }[], maxTokens = 1200): Promise<{ text?: string; error?: string }> {
@@ -191,8 +168,6 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
   }
 
   const r = result
-  const incomeData = financials ? (finPeriod === 'Q' ? financials.quarterlyIncome : financials.annualIncome) : []
-  const estimates = financials ? (finPeriod === 'Q' ? financials.quarterlyEstimates : financials.annualEstimates) : []
 
   return (
     <div style={{ display: 'flex', gap: 0 }}>
@@ -284,158 +259,6 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
             </div>
           )}
 
-          {/* Price & RS */}
-          <div style={card}>
-            <div style={{ fontWeight: 500, marginBottom: 12 }}>📈 Price & Relative Strength</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8 }}>
-              <MetricBox label="52W High" value={r.priceRange?.week52High ? `$${Number(r.priceRange.week52High).toFixed(2)}` : 'N/A'}
-                sub={r.priceRange?.high52Pct ? `${fmtPct(r.priceRange.high52Pct)} from high` : undefined}
-                color={r.priceRange?.high52Pct ? pctColor(r.priceRange.high52Pct) : undefined} />
-              <MetricBox label="52W Low" value={r.priceRange?.week52Low ? `$${Number(r.priceRange.week52Low).toFixed(2)}` : 'N/A'}
-                sub={r.priceRange?.low52Pct ? `${fmtPct(r.priceRange.low52Pct)} from low` : undefined} color="#16a34a" />
-              <MetricBox label="1 Month RS" value={fmtPct(r.rs?.month1)} color={pctColor(r.rs?.month1)} />
-              <MetricBox label="3 Month RS" value={fmtPct(r.rs?.month3)} color={pctColor(r.rs?.month3)} />
-              <MetricBox label="YTD RS" value={fmtPct(r.rs?.ytd)} color={pctColor(r.rs?.ytd)} />
-              <MetricBox label="Beta" value={fmt(r.metrics?.beta,'','',2)} />
-            </div>
-          </div>
-
-          {/* Fundamentals */}
-          <div style={card}>
-            <div style={{ fontWeight: 500, marginBottom: 12 }}>📊 Fundamentals (TTM)</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8 }}>
-              <MetricBox label="P/E ratio" value={fmt(r.metrics?.['peNormalizedAnnual']||r.metrics?.['peTTM'],'','',1)} />
-              <MetricBox label="EPS (TTM)" value={fmt(r.metrics?.epsNormalizedAnnual,'$','',2)} />
-              <MetricBox label="ROE" value={fmt(r.metrics?.roeTTM,'','%',1)} />
-              <MetricBox label="Net margin" value={fmt(r.metrics?.netProfitMarginTTM,'','%',1)} />
-              <MetricBox label="Rev growth YoY" value={fmtPct(r.metrics?.revenueGrowthTTMYoy)} color={pctColor(r.metrics?.revenueGrowthTTMYoy)} />
-              <MetricBox label="Gross margin" value={fmt(r.metrics?.grossMarginTTM,'','%',1)} />
-              <MetricBox label="P/S ratio" value={fmt(r.metrics?.psTTM,'','',2)} />
-              <MetricBox label="Debt/equity" value={fmt(r.metrics?.['totalDebt/totalEquityAnnual'],'','',2)} />
-              <MetricBox label="Short ratio" value={fmt(r.metrics?.shortRatio,'','d',1)} />
-              <MetricBox label="Shares out" value={r.companyProfile?.sharesOutstanding ? `${(r.companyProfile.sharesOutstanding/1e6).toFixed(0)}M` : 'N/A'} />
-            </div>
-          </div>
-
-          {/* Revenue & Earnings */}
-          <div style={card}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={{ fontWeight: 500 }}>💰 Revenue & Earnings History</span>
-              <div style={{ display: 'flex', border: '1px solid #e5e5e3', borderRadius: 8, overflow: 'hidden' }}>
-                {(['Q','A'] as const).map(p => (
-                  <button key={p} onClick={() => setFinPeriod(p)} style={{
-                    padding: '4px 14px', fontSize: 12, border: 'none', cursor: 'pointer',
-                    background: finPeriod===p ? '#1a1a18' : '#fff',
-                    color: finPeriod===p ? '#fff' : '#6b6b68', fontWeight: finPeriod===p ? 600 : 400
-                  }}>{p==='Q'?'Quarterly':'Annual'}</button>
-                ))}
-              </div>
-            </div>
-            {incomeData.length > 0 ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid #e5e5e3' }}>
-                      {['Period','Revenue','Rev YoY','Gross Profit','Net Income','EPS','Margin'].map(h => (
-                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {incomeData.map((row: any, i: number) => {
-                      const prev = incomeData[i+1]
-                      const revG = prev?.revenue ? ((row.revenue-prev.revenue)/Math.abs(prev.revenue)*100) : null
-                      const margin = row.netIncomeRatio ?? (row.revenue ? row.netIncome/row.revenue : null)
-                      return (
-                        <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
-                          <td style={{ padding: '7px 10px', fontWeight: 500, whiteSpace: 'nowrap' }}>{row.date?.substring(0,7)}</td>
-                          <td style={{ padding: '7px 10px', fontWeight: 500 }}>{fmtM(row.revenue)}</td>
-                          <td style={{ padding: '7px 10px', color: revG!=null?pctColor(revG):'#9b9b98', fontWeight: 500 }}>{revG!=null?fmtPct(revG):'—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{fmtM(row.grossProfit)}</td>
-                          <td style={{ padding: '7px 10px', color: (row.netIncome||0)>=0?'#16a34a':'#dc2626', fontWeight: 500 }}>{fmtM(row.netIncome)}</td>
-                          <td style={{ padding: '7px 10px', fontWeight: 500 }}>{row.eps!=null?`$${Number(row.eps).toFixed(2)}`:'—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{margin!=null?(margin*100).toFixed(1)+'%':'—'}</td>
-                        </tr>
-                      )
-                    })}
-                    {estimates.slice(0,3).map((est: any, i: number) => (
-                      <tr key={`e${i}`} style={{ background: '#f8f8f7', borderBottom: '1px solid #e5e5e3', opacity: 0.8 }}>
-                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{est.date?.substring(0,7)} <span style={{ fontSize:10, background:'#e5e5e3', borderRadius:3, padding:'1px 4px' }}>est</span></td>
-                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{fmtM(est.revenueAvg ?? est.estimatedRevenueAvg)}</td>
-                        <td colSpan={3} style={{ padding: '7px 10px', color: '#9b9b98' }}>—</td>
-                        <td style={{ padding: '7px 10px', color: '#6b6b68' }}>{(est.epsAvg ?? est.estimatedEpsAvg)!=null?`$${Number(est.epsAvg ?? est.estimatedEpsAvg).toFixed(2)}`:'—'}</td>
-                        <td style={{ padding: '7px 10px', color: '#9b9b98' }}>—</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div style={{ fontSize: 13, color: '#9b9b98', padding: '8px 0' }}>
-                {keys.fmp ? (financials === null ? 'Loading...' : 'No financial data available') : '⚠️ Add FMP API key to see revenue & earnings history'}
-              </div>
-            )}
-          </div>
-
-          {/* Forward Estimates (MarketSmith-style: next 3 quarters + next fiscal years) */}
-          {(financials?.quarterlyEstimates?.length > 0 || financials?.annualEstimates?.length > 0 || financials?.quarterlyEstimatesRestricted) && (
-            <div style={card}>
-              <div style={{ fontWeight: 500, marginBottom: 12 }}>🔮 Forward Estimates (Analyst Consensus)</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Next Quarters</div>
-                  {financials.quarterlyEstimates?.length > 0 ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
-                        {['Period','Est. Revenue','Est. EPS'].map(h => (
-                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
-                        ))}
-                      </tr></thead>
-                      <tbody>
-                        {financials.quarterlyEstimates.map((e: any, i: number) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
-                            <td style={{ padding: '6px 8px', fontWeight: 500 }}>{e.date?.substring(0,7)}</td>
-                            <td style={{ padding: '6px 8px' }}>{fmtM(e.revenueAvg)}</td>
-                            <td style={{ padding: '6px 8px' }}>{e.epsAvg!=null?`$${Number(e.epsAvg).toFixed(2)}`:'—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#9b9b98' }}>
-                      {financials.quarterlyEstimatesRestricted ? '⚠️ Недоступно на вашем тарифе FMP (нужен апгрейд подписки)' : 'Нет данных'}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Next Fiscal Years</div>
-                  {financials.annualEstimates?.length > 0 ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
-                        {['Year','Est. Revenue','Est. EPS'].map(h => (
-                          <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
-                        ))}
-                      </tr></thead>
-                      <tbody>
-                        {financials.annualEstimates.map((e: any, i: number) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
-                            <td style={{ padding: '6px 8px', fontWeight: 500 }}>{e.date?.substring(0,4)}</td>
-                            <td style={{ padding: '6px 8px' }}>{fmtM(e.revenueAvg)}</td>
-                            <td style={{ padding: '6px 8px' }}>{e.epsAvg!=null?`$${Number(e.epsAvg).toFixed(2)}`:'—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#9b9b98' }}>
-                      {financials.annualEstimatesRestricted ? '⚠️ Недоступно на вашем тарифе FMP' : 'Нет данных'}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Earnings Surprise */}
           {r.earningsSurprise?.length > 0 && (
             <div style={card}>
@@ -472,27 +295,93 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
           {/* Analyst Ratings */}
           <div style={card}>
             <div style={{ fontWeight: 500, marginBottom: 12 }}>🎯 Analyst Ratings & Price Targets</div>
-            {r.recs?.[0] && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8, marginBottom: 12 }}>
-                <MetricBox label="Strong Buy" value={String(r.recs[0].strongBuy)} color="#16a34a" />
-                <MetricBox label="Buy" value={String(r.recs[0].buy)} color="#16a34a" />
-                <MetricBox label="Hold" value={String(r.recs[0].hold)} color="#d97706" />
-                <MetricBox label="Sell" value={String(r.recs[0].sell)} color="#dc2626" />
-                <MetricBox label="Strong Sell" value={String(r.recs[0].strongSell)} color="#dc2626" />
+
+            {(r.gradesConsensus || r.recs?.[0]) && (() => {
+              const g = r.gradesConsensus
+              const rec = r.recs?.[0]
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8, marginBottom: 12 }}>
+                  <MetricBox label="Strong Buy" value={String(g?.strongBuy ?? rec?.strongBuy ?? '—')} color="#16a34a" />
+                  <MetricBox label="Buy" value={String(g?.buy ?? rec?.buy ?? '—')} color="#16a34a" />
+                  <MetricBox label="Hold" value={String(g?.hold ?? rec?.hold ?? '—')} color="#d97706" />
+                  <MetricBox label="Sell" value={String(g?.sell ?? rec?.sell ?? '—')} color="#dc2626" />
+                  <MetricBox label="Strong Sell" value={String(g?.strongSell ?? rec?.strongSell ?? '—')} color="#dc2626" />
+                </div>
+              )
+            })()}
+            {r.gradesConsensus?.consensus && (
+              <div style={{ marginBottom: 12 }}>
+                <Badge label={`Consensus: ${r.gradesConsensus.consensus}`}
+                  color={r.gradesConsensus.consensus?.toLowerCase().includes('buy')?'green':r.gradesConsensus.consensus?.toLowerCase().includes('sell')?'red':'yellow'} />
               </div>
             )}
-            {r.priceTarget && (r.priceTarget.targetMean || r.priceTarget.targetHigh) && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 12 }}>
-                <MetricBox label="PT High" value={r.priceTarget.targetHigh?`$${r.priceTarget.targetHigh}`:'N/A'} color="#16a34a" />
-                <MetricBox label="PT Mean" value={r.priceTarget.targetMean?`$${Number(r.priceTarget.targetMean).toFixed(2)}`:'N/A'} />
-                <MetricBox label="PT Low" value={r.priceTarget.targetLow?`$${r.priceTarget.targetLow}`:'N/A'} color="#dc2626" />
+
+            {(() => {
+              const pt = r.priceTargetConsensus
+              const ptOld = r.priceTarget
+              const high = pt?.targetHigh ?? ptOld?.targetHigh
+              const mid = pt?.targetConsensus ?? ptOld?.targetMean
+              const median = pt?.targetMedian
+              const low = pt?.targetLow ?? ptOld?.targetLow
+              if (!high && !mid) return null
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${median!=null?4:3},1fr)`, gap: 8, marginBottom: 12 }}>
+                  <MetricBox label="PT High" value={high?`$${Number(high).toFixed(2)}`:'N/A'} color="#16a34a" />
+                  <MetricBox label="PT Consensus" value={mid?`$${Number(mid).toFixed(2)}`:'N/A'} />
+                  {median!=null && <MetricBox label="PT Median" value={`$${Number(median).toFixed(2)}`} />}
+                  <MetricBox label="PT Low" value={low?`$${Number(low).toFixed(2)}`:'N/A'} color="#dc2626" />
+                </div>
+              )
+            })()}
+
+            {/* Price-target cluster: how the average target has moved across time windows */}
+            {r.priceTargetSummary && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: '#6b6b68', marginBottom: 6 }}>Price-target cluster (avg target by window):</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+                  <MetricBox label="Last Month" value={r.priceTargetSummary.lastMonthAvgPriceTarget?`$${Number(r.priceTargetSummary.lastMonthAvgPriceTarget).toFixed(2)}`:'N/A'}
+                    sub={r.priceTargetSummary.lastMonthCount!=null?`${r.priceTargetSummary.lastMonthCount} analysts`:undefined} />
+                  <MetricBox label="Last Quarter" value={r.priceTargetSummary.lastQuarterAvgPriceTarget?`$${Number(r.priceTargetSummary.lastQuarterAvgPriceTarget).toFixed(2)}`:'N/A'}
+                    sub={r.priceTargetSummary.lastQuarterCount!=null?`${r.priceTargetSummary.lastQuarterCount} analysts`:undefined} />
+                  <MetricBox label="Last Year" value={r.priceTargetSummary.lastYearAvgPriceTarget?`$${Number(r.priceTargetSummary.lastYearAvgPriceTarget).toFixed(2)}`:'N/A'}
+                    sub={r.priceTargetSummary.lastYearCount!=null?`${r.priceTargetSummary.lastYearCount} analysts`:undefined} />
+                  <MetricBox label="All-Time" value={r.priceTargetSummary.allTimeAvgPriceTarget?`$${Number(r.priceTargetSummary.allTimeAvgPriceTarget).toFixed(2)}`:'N/A'}
+                    sub={r.priceTargetSummary.allTimeCount!=null?`${r.priceTargetSummary.allTimeCount} analysts`:undefined} />
+                </div>
               </div>
             )}
+
+            {/* Rating trend over recent months */}
+            {r.gradesHistorical?.length > 0 && (
+              <div style={{ marginBottom: 12, overflowX: 'auto' }}>
+                <div style={{ fontSize: 12, color: '#6b6b68', marginBottom: 6 }}>Rating trend (last {r.gradesHistorical.length} months):</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead><tr style={{ borderBottom: '1px solid #e5e5e3' }}>
+                    {['Month','Strong Buy','Buy','Hold','Sell','Strong Sell'].map(h => (
+                      <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {r.gradesHistorical.map((g: any, i: number) => (
+                      <tr key={i} style={{ borderBottom: '1px solid #e5e5e3' }}>
+                        <td style={{ padding: '5px 8px', fontWeight: 500 }}>{g.date?.substring(0,7)}</td>
+                        <td style={{ padding: '5px 8px', color: '#16a34a' }}>{g.analystRatingsStrongBuy}</td>
+                        <td style={{ padding: '5px 8px', color: '#16a34a' }}>{g.analystRatingsBuy}</td>
+                        <td style={{ padding: '5px 8px', color: '#d97706' }}>{g.analystRatingsHold}</td>
+                        <td style={{ padding: '5px 8px', color: '#dc2626' }}>{g.analystRatingsSell}</td>
+                        <td style={{ padding: '5px 8px', color: '#dc2626' }}>{g.analystRatingsStrongSell}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             {r.recentGrades?.length > 0 && (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, color: '#6b6b68' }}>Recent changes (30d):</span>
-                  {r.recentGrades.length >= 5 && <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: '#fffbeb', color: '#d97706' }}>⚠️ {r.recentGrades.length} analysts changed target</span>}
+                  <span style={{ fontSize: 12, color: '#6b6b68' }}>Latest rating changes (30d):</span>
+                  {r.recentGrades.length >= 5 && <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: '#fffbeb', color: '#d97706' }}>⚠️ {r.recentGrades.length} analysts changed rating</span>}
                 </div>
                 {r.recentGrades.slice(0,8).map((g: any, i: number) => (
                   <div key={i} style={{ ...rowStyle, fontSize: 12, borderBottom: i<Math.min(r.recentGrades.length,8)-1?'1px solid #e5e5e3':'none' }}>
@@ -502,6 +391,9 @@ Data: ${data.profile?.name}, ${data.profile?.finnhubIndustry}, News: ${(data.new
                     <span style={{ fontWeight: 600, color: g.newGrade?.toLowerCase().includes('buy')||g.newGrade?.toLowerCase().includes('outperform')?'#16a34a':g.newGrade?.toLowerCase().includes('sell')||g.newGrade?.toLowerCase().includes('underperform')?'#dc2626':'#1a1a18' }}>{g.newGrade}</span>
                   </div>
                 ))}
+                <div style={{ fontSize: 11, color: '#9b9b98', marginTop: 8 }}>
+                  ⓘ Показаны изменения рейтинга (Buy/Hold/Sell). Точная история "таргет $X → $Y" по каждому аналитику доступна только на платном тарифе FMP.
+                </div>
               </>
             )}
           </div>

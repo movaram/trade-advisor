@@ -99,8 +99,3 @@ export function catalystScore(events: CatalystEvent[]) {
   if (total >= 3) return { level: 'mild', label: 'Mild activity', color: 'blue' }
   return { level: 'clean', label: '✓ Clean', color: 'green' }
 }
-
-export function fmt(val: number | null | undefined, pre = '', suf = '', dec = 2): string {
-  if (val == null || isNaN(val)) return 'N/A'
-  return pre + Number(val).toFixed(dec) + suf
-}

@@ -50,8 +50,9 @@ export async function POST(req: NextRequest) {
 
     // FMP calls
     let earningsSurprise: any[] = [], institutionalOwnership: any[] = [],
-        stockGrade: any[] = [], companyProfile: any = null, priceHistory: any[] = [],
-        sectorPerf: any = null
+        stockGrade: any[] = [], companyProfile: any = null,
+        gradesConsensus: any = null, priceTargetConsensus: any = null,
+        priceTargetSummary: any = null, gradesHistorical: any[] = []
 
     let quoteYearHigh: number | null = null, quoteYearLow: number | null = null
 
@@ -62,15 +63,16 @@ export async function POST(req: NextRequest) {
       const instQuarter = qNow === 1 ? 4 : qNow - 1
       const instYear = qNow === 1 ? now.getFullYear() - 1 : now.getFullYear()
 
-      const from365 = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-
-      const [surp, inst, grade, prof, hist, quote] = await Promise.allSettled([
+      const [surp, inst, grade, prof, quote, gConsensus, ptConsensus, ptSummary, gHistorical] = await Promise.allSettled([
         fmp(`earnings?symbol=${sym}&limit=5`, fmpKey),
         fmp(`institutional-ownership/extract?symbol=${sym}&year=${instYear}&quarter=${instQuarter}`, fmpKey),
         fmp(`grades?symbol=${sym}&limit=30`, fmpKey),
         fmp(`profile?symbol=${sym}`, fmpKey),
-        fmp(`historical-price-eod/full?symbol=${sym}&from=${from365}&to=${to}`, fmpKey),
         fmp(`quote?symbol=${sym}`, fmpKey),
+        fmp(`grades-consensus?symbol=${sym}`, fmpKey),
+        fmp(`price-target-consensus?symbol=${sym}`, fmpKey),
+        fmp(`price-target-summary?symbol=${sym}`, fmpKey),
+        fmp(`grades-historical?symbol=${sym}&limit=6`, fmpKey),
       ])
 
       const earningsRaw = surp.status === 'fulfilled' && Array.isArray(surp.value) ? surp.value : []
@@ -84,47 +86,33 @@ export async function POST(req: NextRequest) {
       const profArr = prof.status === 'fulfilled' ? prof.value : null
       companyProfile = Array.isArray(profArr) ? profArr[0] : profArr
 
-      const histData = hist.status === 'fulfilled' ? hist.value : null
-      priceHistory = Array.isArray(histData) ? histData : []
-
       // Get current price / 52-week range from quote (more reliable than profile)
       const quoteData = quote.status === 'fulfilled' ? quote.value : null
       const quoteArr = Array.isArray(quoteData) ? quoteData[0] : quoteData
       if (quoteArr?.price && companyProfile) companyProfile.price = quoteArr.price
       if (quoteArr?.yearHigh) quoteYearHigh = quoteArr.yearHigh
       if (quoteArr?.yearLow) quoteYearLow = quoteArr.yearLow
+
+      const gConsensusData = gConsensus.status === 'fulfilled' ? gConsensus.value : null
+      gradesConsensus = Array.isArray(gConsensusData) ? gConsensusData[0] : gConsensusData
+
+      const ptConsensusData = ptConsensus.status === 'fulfilled' ? ptConsensus.value : null
+      priceTargetConsensus = Array.isArray(ptConsensusData) ? ptConsensusData[0] : ptConsensusData
+
+      const ptSummaryData = ptSummary.status === 'fulfilled' ? ptSummary.value : null
+      priceTargetSummary = Array.isArray(ptSummaryData) ? ptSummaryData[0] : ptSummaryData
+
+      gradesHistorical = gHistorical.status === 'fulfilled' && Array.isArray(gHistorical.value) ? gHistorical.value.slice(0,6) : []
     }
 
-    // Calculate price metrics
+    // Calculate price metrics (52-week range comes straight from FMP's quote, with a Finnhub fallback)
     const currentPrice = companyProfile?.price || null
-    const w52High = quoteYearHigh || metrics?.metric?.['52WeekHigh'] || (priceHistory.length > 0 ? Math.max(...priceHistory.map((d:any)=>d.close)) : null)
-    const w52Low = quoteYearLow || metrics?.metric?.['52WeekLow'] || (priceHistory.length > 0 ? Math.min(...priceHistory.map((d:any)=>d.close)) : null)
-    
+    const w52High = quoteYearHigh || metrics?.metric?.['52WeekHigh'] || null
+    const w52Low = quoteYearLow || metrics?.metric?.['52WeekLow'] || null
+
     let high52Pct = null, low52Pct = null
     if (currentPrice && w52High) high52Pct = ((currentPrice - w52High) / w52High * 100).toFixed(1)
     if (currentPrice && w52Low) low52Pct = ((currentPrice - w52Low) / w52Low * 100).toFixed(1)
-
-    // Calculate RS from price history
-    let rs1m = null, rs3m = null, rsYtd = null
-    if (priceHistory.length > 0 && currentPrice) {
-      const getReturn = (daysAgo: number) => {
-        const idx = Math.min(daysAgo, priceHistory.length - 1)
-        const oldPrice = priceHistory[idx]?.close
-        if (oldPrice) return ((currentPrice - oldPrice) / oldPrice * 100)
-        return null
-      }
-      rs1m = getReturn(21)
-      rs3m = getReturn(63)
-      // YTD
-      const startOfYear = new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0]
-      const ytdEntry = priceHistory.find((d:any) => d.date <= startOfYear)
-      if (ytdEntry) rsYtd = ((currentPrice - ytdEntry.close) / ytdEntry.close * 100)
-    }
-
-    // Fallback RS from Finnhub metrics
-    if (!rs1m) rs1m = metrics?.metric?.['monthToDatePriceReturnDaily']
-    if (!rs3m) rs3m = metrics?.metric?.['13WeekPriceReturnDaily']
-    if (!rsYtd) rsYtd = metrics?.metric?.['yearToDatePriceReturnDaily']
 
     // Recent analyst grade changes (30 days)
     const recentGrades = stockGrade.filter((g:any) => {
@@ -146,8 +134,11 @@ export async function POST(req: NextRequest) {
       institutionalOwnership,
       recentGrades,
       companyProfile,
+      gradesConsensus,
+      priceTargetConsensus,
+      priceTargetSummary,
+      gradesHistorical,
       priceRange: { week52High: w52High, week52Low: w52Low, currentPrice, high52Pct, low52Pct, athPct: high52Pct },
-      rs: { month1: rs1m, month3: rs3m, ytd: rsYtd },
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
