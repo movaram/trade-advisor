@@ -73,6 +73,20 @@ export default function EarningsCalendar() {
     return { label: time, bg: '#f1f5f9', color: '#64748b' }
   }
 
+  function pctColor(val: any) {
+    const n = Number(val); if (val == null || isNaN(n)) return '#9b9b98'
+    return n >= 0 ? '#16a34a' : '#dc2626'
+  }
+  function fmtPct(val: any) {
+    if (val == null || isNaN(Number(val))) return '—'
+    const n = Number(val); return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'
+  }
+  function fmtRevenue(val: any) {
+    if (val == null) return '—'
+    const n = Number(val)
+    return Math.abs(n) >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` : `$${(n / 1e6).toFixed(1)}M`
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
@@ -84,7 +98,7 @@ export default function EarningsCalendar() {
           {loading ? 'Loading...' : 'Refresh ↻'}
         </button>
         <span style={{ fontSize: 13, color: '#6b6b68' }}>
-          Next 7 days · {filtered.length} companies reporting
+          Past 7 + next 7 days · {filtered.length} companies · &gt;$30M market cap, US-listed
         </span>
       </div>
 
@@ -93,6 +107,11 @@ export default function EarningsCalendar() {
       {!keys.finnhub && !keys.fmp && (
         <div style={{ background: '#fffbeb', color: '#d97706', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
           ⚠️ Please save your Finnhub or FMP API key above to load the earnings calendar.
+        </div>
+      )}
+      {keys.finnhub && !keys.fmp && (
+        <div style={{ background: '#fffbeb', color: '#d97706', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
+          ⚠️ Без FMP-ключа недоступны: фильтр по капитализации/бирже и % роста год-к-году.
         </div>
       )}
 
@@ -110,22 +129,31 @@ export default function EarningsCalendar() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                  {['Ticker', 'When', 'Est. EPS', 'Est. Revenue'].map(h => (
-                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
+                  {['Ticker', 'When', 'EPS', 'EPS Growth YoY', 'Revenue', 'Rev Growth YoY', 'Surprise %'].map(h => (
+                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {byDate[date].map((e: any, i: number) => {
                   const tl = timeLabel(e.time)
+                  const reported = e.epsActual != null
+                  const surprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
                   return (
                     <tr key={i} style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
                       <td style={{ padding: '8px 12px', fontWeight: 700, color: '#2563eb' }}>{e.symbol}</td>
                       <td style={{ padding: '8px 12px' }}>
                         {tl ? <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: tl.bg, color: tl.color, fontWeight: 500 }}>{tl.label}</span> : '—'}
                       </td>
-                      <td style={{ padding: '8px 12px', fontWeight: 500 }}>{e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b6b68' }}>{e.revenueEstimated ? `$${(e.revenueEstimated / 1e9).toFixed(2)}B` : '—'}</td>
+                      <td style={{ padding: '8px 12px', fontWeight: 500 }}>
+                        {reported ? `$${Number(e.epsActual).toFixed(2)}` : e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)} (est)` : '—'}
+                      </td>
+                      <td style={{ padding: '8px 12px', color: pctColor(e.epsGrowthPct), fontWeight: 500 }}>{fmtPct(e.epsGrowthPct)}</td>
+                      <td style={{ padding: '8px 12px', color: '#6b6b68' }}>
+                        {reported ? fmtRevenue(e.revenueActual) : e.revenueEstimated != null ? `${fmtRevenue(e.revenueEstimated)} (est)` : '—'}
+                      </td>
+                      <td style={{ padding: '8px 12px', color: pctColor(e.revenueGrowthPct), fontWeight: 500 }}>{fmtPct(e.revenueGrowthPct)}</td>
+                      <td style={{ padding: '8px 12px', color: surprisePct!=null?pctColor(surprisePct):'#9b9b98', fontWeight: 700 }}>{surprisePct!=null?fmtPct(surprisePct):'—'}</td>
                     </tr>
                   )
                 })}
@@ -137,7 +165,7 @@ export default function EarningsCalendar() {
 
       {!loading && dates.length === 0 && !error && (keys.finnhub || keys.fmp) && (
         <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#9b9b98', fontSize: 14 }}>
-          No earnings scheduled for the next 7 days
+          No earnings found in the past/next 7 days
         </div>
       )}
     </div>
