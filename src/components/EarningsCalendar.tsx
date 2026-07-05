@@ -9,6 +9,8 @@ export default function EarningsCalendar() {
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [period, setPeriod] = useState<'past' | 'future'>('future')
+  const [growthBasis, setGrowthBasis] = useState<'yoy' | 'qoq'>('yoy')
 
   useEffect(() => {
     if ((keys.finnhub || keys.fmp) && !loaded) {
@@ -38,9 +40,12 @@ export default function EarningsCalendar() {
     setLoading(false)
   }
 
-  const filtered = earnings.filter(e =>
-    !filter || e.symbol?.toLowerCase().includes(filter.toLowerCase())
-  )
+  const today = new Date().toISOString().split('T')[0]
+
+  const filtered = earnings.filter(e => {
+    if (!(!filter || e.symbol?.toLowerCase().includes(filter.toLowerCase()))) return false
+    return period === 'past' ? e.date < today : e.date >= today
+  })
 
   // Group by date
   const byDate: Record<string, any[]> = {}
@@ -58,7 +63,7 @@ export default function EarningsCalendar() {
   }
 
   function isToday(d: string) {
-    return d === new Date().toISOString().split('T')[0]
+    return d === today
   }
 
   function isTomorrow(d: string) {
@@ -87,19 +92,42 @@ export default function EarningsCalendar() {
     return Math.abs(n) >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` : `$${(n / 1e6).toFixed(1)}M`
   }
 
+  const segStyle = (active: boolean): React.CSSProperties => ({
+    padding: '0 14px', height: 36, fontSize: 13, border: 'none', cursor: 'pointer',
+    background: active ? '#1a1a18' : '#fff', color: active ? '#fff' : '#6b6b68', fontWeight: active ? 600 : 400
+  })
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-        <input value={filter} onChange={e => setFilter(e.target.value)}
-          placeholder="Filter by ticker..."
-          style={{ maxWidth: 240, fontSize: 14, height: 36 }} />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Period</div>
+          <div style={{ display: 'flex', border: '1px solid #e5e5e3', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setPeriod('past')} style={segStyle(period === 'past')}>Past 7 days</button>
+            <button onClick={() => setPeriod('future')} style={segStyle(period === 'future')}>Next 7 days</button>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Growth vs</div>
+          <div style={{ display: 'flex', border: '1px solid #e5e5e3', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setGrowthBasis('yoy')} style={segStyle(growthBasis === 'yoy')}>Yearly (YoY)</button>
+            <button onClick={() => setGrowthBasis('qoq')} style={segStyle(growthBasis === 'qoq')}>Quarterly (QoQ)</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Search</div>
+          <input value={filter} onChange={e => setFilter(e.target.value)}
+            placeholder="Filter by ticker..."
+            style={{ maxWidth: 240, fontSize: 14, height: 36, width: '100%' }} />
+        </div>
         <button onClick={load} disabled={loading}
           style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
           {loading ? 'Loading...' : 'Refresh ↻'}
         </button>
-        <span style={{ fontSize: 13, color: '#6b6b68' }}>
-          Past 7 + next 7 days · {filtered.length} companies · &gt;$30M market cap, US-listed
-        </span>
+      </div>
+
+      <div style={{ fontSize: 13, color: '#6b6b68', marginBottom: '1rem' }}>
+        {filtered.length} companies · &gt;$30M market cap, US-listed
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>{error}</div>}
@@ -111,7 +139,7 @@ export default function EarningsCalendar() {
       )}
       {keys.finnhub && !keys.fmp && (
         <div style={{ background: '#fffbeb', color: '#d97706', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
-          ⚠️ Без FMP-ключа недоступны: фильтр по капитализации/бирже и % роста год-к-году.
+          ⚠️ Без FMP-ключа недоступны: фильтр по капитализации/бирже и % роста.
         </div>
       )}
 
@@ -126,46 +154,52 @@ export default function EarningsCalendar() {
             <span style={{ fontSize: 12, color: '#9b9b98' }}>{byDate[date].length} companies</span>
           </div>
           <div style={{ background: '#fff', border: '1px solid #e5e5e3', borderRadius: 12, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                  {['Ticker', 'When', 'EPS', 'EPS Growth YoY', 'Revenue', 'Rev Growth YoY', 'Surprise %'].map(h => (
-                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {byDate[date].map((e: any, i: number) => {
-                  const tl = timeLabel(e.time)
-                  const reported = e.epsActual != null
-                  const surprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
-                  return (
-                    <tr key={i} style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
-                      <td style={{ padding: '8px 12px', fontWeight: 700, color: '#2563eb' }}>{e.symbol}</td>
-                      <td style={{ padding: '8px 12px' }}>
-                        {tl ? <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: tl.bg, color: tl.color, fontWeight: 500 }}>{tl.label}</span> : '—'}
-                      </td>
-                      <td style={{ padding: '8px 12px', fontWeight: 500 }}>
-                        {reported ? `$${Number(e.epsActual).toFixed(2)}` : e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)} (est)` : '—'}
-                      </td>
-                      <td style={{ padding: '8px 12px', color: pctColor(e.epsGrowthPct), fontWeight: 500 }}>{fmtPct(e.epsGrowthPct)}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b6b68' }}>
-                        {reported ? fmtRevenue(e.revenueActual) : e.revenueEstimated != null ? `${fmtRevenue(e.revenueEstimated)} (est)` : '—'}
-                      </td>
-                      <td style={{ padding: '8px 12px', color: pctColor(e.revenueGrowthPct), fontWeight: 500 }}>{fmtPct(e.revenueGrowthPct)}</td>
-                      <td style={{ padding: '8px 12px', color: surprisePct!=null?pctColor(surprisePct):'#9b9b98', fontWeight: 700 }}>{surprisePct!=null?fmtPct(surprisePct):'—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
+                    {['Ticker', 'When', 'EPS', `EPS Growth ${growthBasis === 'yoy' ? 'YoY' : 'QoQ'}`, 'Revenue', `Rev Growth ${growthBasis === 'yoy' ? 'YoY' : 'QoQ'}`, 'EPS Surprise %', 'Rev Surprise %'].map(h => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {byDate[date].map((e: any, i: number) => {
+                    const tl = timeLabel(e.time)
+                    const reported = e.epsActual != null
+                    const epsSurprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
+                    const revenueSurprisePct = reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
+                    const epsGrowth = growthBasis === 'yoy' ? e.epsGrowthPctYoy : e.epsGrowthPctQoq
+                    const revenueGrowth = growthBasis === 'yoy' ? e.revenueGrowthPctYoy : e.revenueGrowthPctQoq
+                    return (
+                      <tr key={i} style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
+                        <td style={{ padding: '8px 12px', fontWeight: 700, color: '#2563eb' }}>{e.symbol}</td>
+                        <td style={{ padding: '8px 12px' }}>
+                          {tl ? <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: tl.bg, color: tl.color, fontWeight: 500 }}>{tl.label}</span> : '—'}
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: 500 }}>
+                          {reported ? `$${Number(e.epsActual).toFixed(2)}` : e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)} (est)` : '—'}
+                        </td>
+                        <td style={{ padding: '8px 12px', color: pctColor(epsGrowth), fontWeight: 500 }}>{fmtPct(epsGrowth)}</td>
+                        <td style={{ padding: '8px 12px', color: '#6b6b68' }}>
+                          {reported ? fmtRevenue(e.revenueActual) : e.revenueEstimated != null ? `${fmtRevenue(e.revenueEstimated)} (est)` : '—'}
+                        </td>
+                        <td style={{ padding: '8px 12px', color: pctColor(revenueGrowth), fontWeight: 500 }}>{fmtPct(revenueGrowth)}</td>
+                        <td style={{ padding: '8px 12px', color: epsSurprisePct!=null?pctColor(epsSurprisePct):'#9b9b98', fontWeight: 700 }}>{epsSurprisePct!=null?fmtPct(epsSurprisePct):'—'}</td>
+                        <td style={{ padding: '8px 12px', color: revenueSurprisePct!=null?pctColor(revenueSurprisePct):'#9b9b98', fontWeight: 700 }}>{revenueSurprisePct!=null?fmtPct(revenueSurprisePct):'—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ))}
 
       {!loading && dates.length === 0 && !error && (keys.finnhub || keys.fmp) && (
         <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#9b9b98', fontSize: 14 }}>
-          No earnings found in the past/next 7 days
+          {period === 'past' ? 'No earnings found in the past 7 days' : 'No earnings found in the next 7 days'}
         </div>
       )}
     </div>

@@ -27,6 +27,20 @@ function findYoyEntry(targetDate: string, hist: any[]) {
   return bestDiff <= 45 ? best : null
 }
 
+// Find the immediately preceding reported quarter (for quarter-over-quarter growth)
+function findQoqEntry(targetDate: string, hist: any[]) {
+  const t = new Date(targetDate)
+  let best: any = null, bestDiff = Infinity
+  for (const h of hist) {
+    if (!h.date || h.date === targetDate) continue
+    const hd = new Date(h.date)
+    if (hd >= t) continue
+    const daysDiff = (t.getTime() - hd.getTime()) / (1000 * 60 * 60 * 24)
+    if (daysDiff < bestDiff) { bestDiff = daysDiff; best = h }
+  }
+  return best
+}
+
 function growthPct(current: number | null | undefined, prior: number | null | undefined) {
   if (current == null || prior == null || prior === 0) return null
   return ((current - prior) / Math.abs(prior)) * 100
@@ -102,6 +116,12 @@ export async function POST(req: NextRequest) {
       seenKeys.add(k); return true
     })
 
+    // Drop rows with no data at all (no estimate, no actual -- neither FMP nor Finnhub has coverage).
+    // These are typically delayed/unlisted/no-analyst-coverage tickers and just add noise.
+    earnings = earnings.filter(e =>
+      e.epsEstimated != null || e.epsActual != null || e.revenueEstimated != null || e.revenueActual != null
+    )
+
     if (fmpKey) {
       // Market cap + US-exchange + YoY growth all come from two per-symbol FMP calls:
       // `profile` (marketCap + country in one shot) and `earnings` (own quarterly history, for YoY comparison).
@@ -137,12 +157,15 @@ export async function POST(req: NextRequest) {
       earnings = earnings.map(e => {
         const hist = historyBySymbol.get(e.symbol) || []
         const yoy = findYoyEntry(e.date, hist)
+        const qoq = findQoqEntry(e.date, hist)
         const epsForGrowth = e.epsActual ?? e.epsEstimated
         const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
         return {
           ...e,
-          epsGrowthPct: yoy ? growthPct(epsForGrowth, yoy.epsActual) : null,
-          revenueGrowthPct: yoy ? growthPct(revenueForGrowth, yoy.revenueActual) : null,
+          epsGrowthPctYoy: yoy ? growthPct(epsForGrowth, yoy.epsActual) : null,
+          revenueGrowthPctYoy: yoy ? growthPct(revenueForGrowth, yoy.revenueActual) : null,
+          epsGrowthPctQoq: qoq ? growthPct(epsForGrowth, qoq.epsActual) : null,
+          revenueGrowthPctQoq: qoq ? growthPct(revenueForGrowth, qoq.revenueActual) : null,
         }
       })
     }
