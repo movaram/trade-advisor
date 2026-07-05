@@ -3,7 +3,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useKeys } from '@/lib/keys'
 
 const ALL_FORM_TYPES = ['8-K', '10-Q', '10-K', '4', 'S-1', 'SC 13G', 'SC 13D']
-const VISIBLE_LIMIT = 30
+// Real filing time comes from a per-ticker Finnhub call. Rather than only showing however many
+// rows fit under one burst of calls, every row is shown and enrichment is fetched as a background
+// queue capped at ENRICH_BATCH_SIZE new tickers per 30s refresh (~12/min), well under Finnhub's
+// free-tier limit. Already-fetched tickers are cached in `realTimes` and never re-requested.
+const ENRICH_BATCH_SIZE = 6
 
 // Convert an SEC/Finnhub wall-clock timestamp (always US Eastern Time) into a real Date,
 // correctly handling EST/EDT — Finnhub's acceptedDate has no timezone marker of its own.
@@ -104,13 +108,15 @@ export default function SecLive() {
     return matchesSearch && matchesTab
   })
 
-  // Exact filing time comes from Finnhub and is only fetched for the rows actually shown,
-  // to stay well under Finnhub's free-tier rate limit.
-  const visible = filtered.slice(0, VISIBLE_LIMIT)
+  // Every matching row is shown. Real filing time is fetched as a rate-limited background queue
+  // (see ENRICH_BATCH_SIZE) instead of gating which rows get to appear at all.
+  const visible = filtered
 
   useEffect(() => {
     if (!keys.finnhub) return
-    const tickers = Array.from(new Set(visible.map(f => f.ticker))).filter(t => t && t !== '—' && !realTimes[t])
+    const tickers = Array.from(new Set(visible.map(f => f.ticker)))
+      .filter(t => t && t !== '—' && !realTimes[t])
+      .slice(0, ENRICH_BATCH_SIZE)
     if (tickers.length === 0) return
     fetch('/api/sec-filing-times', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -118,8 +124,10 @@ export default function SecLive() {
     }).then(r => r.json()).then(data => {
       if (data.times) setRealTimes(prev => ({ ...prev, ...data.times }))
     }).catch(() => {})
+    // Re-run every refresh cycle (lastUpdate ticks every 30s) so the queue keeps draining,
+    // not just when the visible ticker set happens to change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible.map(f => f.ticker).join(','), keys.finnhub])
+  }, [lastUpdate, filter, activeTab, keys.finnhub])
 
   function getRealTime(f: any): Date | null {
     const list = realTimes[f.ticker]
@@ -279,9 +287,9 @@ export default function SecLive() {
               </tbody>
             </table>
           </div>
-          {filtered.length > VISIBLE_LIMIT && (
+          {keys.finnhub && Array.from(new Set(visible.map(f => f.ticker))).some(t => t && t !== '—' && !realTimes[t]) && (
             <div style={{ textAlign: 'center', padding: '10px 0', fontSize: 12, color: '#9b9b98' }}>
-              Показаны последние {VISIBLE_LIMIT} из {filtered.length}. Сузьте поиск или временной диапазон, чтобы увидеть остальные.
+              Точное время подгружается постепенно (до {ENRICH_BATCH_SIZE} новых тикеров каждые 30 сек) — строки со значком «…» скоро обновятся.
             </div>
           )}
         </>
