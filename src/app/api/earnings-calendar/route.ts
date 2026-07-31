@@ -77,24 +77,41 @@ export async function POST(req: NextRequest) {
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
 
+    // Both providers cap how many rows a single request can return (Finnhub silently truncates at
+    // 1500 for its whole-range call, and on a busy week that cap gets hit before reaching every day
+    // in a 14-day span -- which was quietly dropping "today" entirely). Fetching today as its own
+    // dedicated request guarantees it never gets crowded out by the wider past/future ranges.
     let fmpEarnings: any[] = []
     if (fmpKey) {
-      const [past, future] = await Promise.all([
+      const [past, todayFmp, future] = await Promise.all([
         fmpJson(`https://financialmodelingprep.com/stable/earnings-calendar?from=${weekAgo}&to=${today}&apikey=${fmpKey}`),
+        fmpJson(`https://financialmodelingprep.com/stable/earnings-calendar?from=${today}&to=${today}&apikey=${fmpKey}`),
         fmpJson(`https://financialmodelingprep.com/stable/earnings-calendar?from=${today}&to=${nextWeek}&apikey=${fmpKey}`),
       ])
-      fmpEarnings = [...(Array.isArray(past) ? past : []), ...(Array.isArray(future) ? future : [])]
+      fmpEarnings = [
+        ...(Array.isArray(past) ? past : []),
+        ...(Array.isArray(todayFmp) ? todayFmp : []),
+        ...(Array.isArray(future) ? future : []),
+      ]
+    }
+
+    const fhCalendar = async (from: string, to: string): Promise<any[]> => {
+      try {
+        const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${finnhubKey}`)
+        if (!r.ok) return []
+        const d = await r.json()
+        return Array.isArray(d.earningsCalendar) ? d.earningsCalendar : []
+      } catch { return [] }
     }
 
     let fhEarnings: any[] = []
     if (finnhubKey) {
-      try {
-        const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${weekAgo}&to=${nextWeek}&token=${finnhubKey}`)
-        if (r.ok) {
-          const d = await r.json()
-          fhEarnings = Array.isArray(d.earningsCalendar) ? d.earningsCalendar : []
-        }
-      } catch {}
+      const [past, todayFh, future] = await Promise.all([
+        fhCalendar(weekAgo, today),
+        fhCalendar(today, today),
+        fhCalendar(today, nextWeek),
+      ])
+      fhEarnings = [...past, ...todayFh, ...future]
     }
 
     // Finnhub still reports pre/after-market timing (FMP's stable calendar dropped that field), so merge it in by symbol.
@@ -189,7 +206,11 @@ export async function POST(req: NextRequest) {
 
     earnings.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
 
-    return NextResponse.json({ earnings: earnings.slice(0, 500) })
+    // No row-count cap here anymore: sorting ascending then slicing was silently cutting off
+    // today/future entries whenever the past-week volume alone exceeded the cap. The only genuinely
+    // expensive part (per-symbol FMP enrichment) is already scoped to today's reporters above, so
+    // returning the full list costs nothing extra.
+    return NextResponse.json({ earnings })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
