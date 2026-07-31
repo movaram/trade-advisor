@@ -10,7 +10,6 @@ export default function EarningsCalendar() {
   const [filter, setFilter] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [period, setPeriod] = useState<'today' | 'past' | 'future'>('today')
-  const [growthBasis, setGrowthBasis] = useState<'yoy' | 'qoq'>('yoy')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -62,6 +61,12 @@ export default function EarningsCalendar() {
     if (!d || d === '—') return d
     const date = new Date(d + 'T00:00:00')
     return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+  }
+
+  function formatQuarterLabel(d: string) {
+    if (!d) return '—'
+    const date = new Date(d + 'T00:00:00')
+    return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
   }
 
   function isToday(d: string) {
@@ -126,13 +131,6 @@ export default function EarningsCalendar() {
             <button onClick={() => setPeriod('future')} style={segStyle(period === 'future')}>Next 7 days</button>
           </div>
         </div>
-        <div>
-          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Growth vs</div>
-          <div style={{ display: 'flex', border: '1px solid #e5e5e3', borderRadius: 8, overflow: 'hidden' }}>
-            <button onClick={() => setGrowthBasis('yoy')} style={segStyle(growthBasis === 'yoy')}>Yearly (YoY)</button>
-            <button onClick={() => setGrowthBasis('qoq')} style={segStyle(growthBasis === 'qoq')}>Quarterly (QoQ)</button>
-          </div>
-        </div>
         <div style={{ flex: 1, minWidth: 160 }}>
           <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Search</div>
           <input value={filter} onChange={e => setFilter(e.target.value)}
@@ -146,7 +144,7 @@ export default function EarningsCalendar() {
       </div>
 
       <div style={{ fontSize: 13, color: '#6b6b68', marginBottom: '1rem' }}>
-        {filtered.length} companies{period === 'today' ? ' · market cap, growth % and last-4-quarters history available (click a row)' : ' · full history/growth available on the Today tab to stay within API limits'}
+        {filtered.length} companies · growth always vs. same quarter last year (O'Neil/Bonde style){period === 'today' ? ' · market cap and 8-quarter history available (click a row)' : ' · full history available on the Today tab to stay within API limits'}
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>{error}</div>}
@@ -158,7 +156,7 @@ export default function EarningsCalendar() {
       )}
       {keys.finnhub && !keys.fmp && (
         <div style={{ background: '#eff6ff', color: '#2563eb', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
-          ℹ️ Капитализация, EPS Growth (QoQ) и история EPS за 4 квартала уже работают через Finnhub. Без FMP-ключа не будет: EPS Growth YoY и всё, что касается Revenue Growth/истории по выручке.
+          ℹ️ Капитализация и история EPS/Sales за 8 кварталов уже работают через Finnhub одни, без FMP.
         </div>
       )}
 
@@ -177,7 +175,7 @@ export default function EarningsCalendar() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                    {['Ticker', 'Mkt Cap', 'When', 'EPS', `EPS Growth ${growthBasis === 'yoy' ? 'YoY' : 'QoQ'}`, 'Revenue', `Rev Growth ${growthBasis === 'yoy' ? 'YoY' : 'QoQ'}`, 'EPS Surprise %', 'Rev Surprise %'].map(h => (
+                    {['Ticker', 'Mkt Cap', 'When', 'EPS', 'EPS Growth (YoY)', 'Revenue', 'Rev Growth (YoY)', 'EPS Surprise %', 'Rev Surprise %'].map(h => (
                       <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
@@ -189,10 +187,8 @@ export default function EarningsCalendar() {
                     const reported = e.epsActual != null
                     const epsSurprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
                     const revenueSurprisePct = reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
-                    const epsGrowth = growthBasis === 'yoy' ? e.epsGrowthPctYoy : e.epsGrowthPctQoq
-                    const revenueGrowth = growthBasis === 'yoy' ? e.revenueGrowthPctYoy : e.revenueGrowthPctQoq
                     const isOpen = expanded.has(key)
-                    const hasHistory = Array.isArray(e.last4) && e.last4.length > 0
+                    const hasHistory = Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0
                     return (
                       <Fragment key={key}>
                         <tr onClick={() => hasHistory && toggleExpanded(key)}
@@ -208,11 +204,11 @@ export default function EarningsCalendar() {
                           <td style={{ padding: '8px 12px', fontWeight: 500 }}>
                             {reported ? `$${Number(e.epsActual).toFixed(2)}` : e.epsEstimated != null ? `$${Number(e.epsEstimated).toFixed(2)} (est)` : '—'}
                           </td>
-                          <td style={{ padding: '8px 12px', color: pctColor(epsGrowth), fontWeight: 500 }}>{fmtPct(epsGrowth)}</td>
+                          <td style={{ padding: '8px 12px', color: pctColor(e.epsGrowthPctYoy), fontWeight: 500 }}>{fmtPct(e.epsGrowthPctYoy)}</td>
                           <td style={{ padding: '8px 12px', color: '#6b6b68' }}>
                             {reported ? fmtRevenue(e.revenueActual) : e.revenueEstimated != null ? `${fmtRevenue(e.revenueEstimated)} (est)` : '—'}
                           </td>
-                          <td style={{ padding: '8px 12px', color: pctColor(revenueGrowth), fontWeight: 500 }}>{fmtPct(revenueGrowth)}</td>
+                          <td style={{ padding: '8px 12px', color: pctColor(e.revenueGrowthPctYoy), fontWeight: 500 }}>{fmtPct(e.revenueGrowthPctYoy)}</td>
                           <td style={{ padding: '8px 12px', color: epsSurprisePct!=null?pctColor(epsSurprisePct):'#9b9b98', fontWeight: 700 }}>{epsSurprisePct!=null?fmtPct(epsSurprisePct):'—'}</td>
                           <td style={{ padding: '8px 12px', color: revenueSurprisePct!=null?pctColor(revenueSurprisePct):'#9b9b98', fontWeight: 700 }}>{revenueSurprisePct!=null?fmtPct(revenueSurprisePct):'—'}</td>
                         </tr>
@@ -220,32 +216,31 @@ export default function EarningsCalendar() {
                           <tr style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
                             <td colSpan={9} style={{ padding: '0 12px 12px 32px', background: '#f8f8f7' }}>
                               <div style={{ fontSize: 11, color: '#9b9b98', margin: '8px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                Last {e.last4.length} quarters ({growthBasis === 'yoy' ? 'YoY' : 'QoQ'})
+                                Quarterly EPS &amp; Sales (O'Neil/Bonde style — vs. same quarter last year)
                               </div>
-                              <table style={{ width: '100%', maxWidth: 520, borderCollapse: 'collapse', fontSize: 12 }}>
+                              <table style={{ width: '100%', maxWidth: 480, borderCollapse: 'collapse', fontSize: 12 }}>
                                 <thead>
                                   <tr>
-                                    {['Quarter', 'EPS', 'EPS Growth', 'Revenue', 'Rev Growth'].map(h => (
-                                      <th key={h} style={{ padding: '4px 8px', textAlign: 'left', fontSize: 10, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
+                                    {['Quarter', 'EPS ($)', '%Chg', 'Sales', '%Chg'].map((h, hi) => (
+                                      <th key={hi} style={{ padding: '4px 8px', textAlign: 'left', fontSize: 10, color: '#9b9b98', fontWeight: 500 }}>{h}</th>
                                     ))}
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {e.last4.map((q: any, qi: number) => {
-                                    const qEpsGrowth = growthBasis === 'yoy' ? q.epsGrowthPctYoy : q.epsGrowthPctQoq
-                                    const qRevGrowth = growthBasis === 'yoy' ? q.revenueGrowthPctYoy : q.revenueGrowthPctQoq
-                                    return (
-                                      <tr key={qi}>
-                                        <td style={{ padding: '4px 8px', fontWeight: 500 }}>{q.date?.substring(0,7)}</td>
-                                        <td style={{ padding: '4px 8px' }}>{q.epsActual != null ? `$${Number(q.epsActual).toFixed(2)}` : '—'}</td>
-                                        <td style={{ padding: '4px 8px', color: pctColor(qEpsGrowth) }}>{fmtPct(qEpsGrowth)}</td>
-                                        <td style={{ padding: '4px 8px' }}>{fmtRevenue(q.revenueActual)}</td>
-                                        <td style={{ padding: '4px 8px', color: pctColor(qRevGrowth) }}>{fmtPct(qRevGrowth)}</td>
-                                      </tr>
-                                    )
-                                  })}
+                                  {e.quarterlyHistory.map((q: any, qi: number) => (
+                                    <tr key={qi}>
+                                      <td style={{ padding: '4px 8px', fontWeight: 500 }}>{formatQuarterLabel(q.date)}</td>
+                                      <td style={{ padding: '4px 8px' }}>{q.eps != null ? `$${Number(q.eps).toFixed(2)}` : '—'}</td>
+                                      <td style={{ padding: '4px 8px', color: pctColor(q.epsYoyPct) }}>{fmtPct(q.epsYoyPct)}</td>
+                                      <td style={{ padding: '4px 8px' }}>{fmtRevenue(q.revenue)}</td>
+                                      <td style={{ padding: '4px 8px', color: pctColor(q.revenueYoyPct) }}>{fmtPct(q.revenueYoyPct)}</td>
+                                    </tr>
+                                  ))}
                                 </tbody>
                               </table>
+                              <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 6 }}>
+                                EPS is as-reported (GAAP) — can look choppy for companies with one-time charges (M&amp;A, impairments), which is normal.
+                              </div>
                             </td>
                           </tr>
                         )}
