@@ -157,8 +157,8 @@ export default function EarningsCalendar() {
         </div>
       )}
       {keys.finnhub && !keys.fmp && (
-        <div style={{ background: '#fffbeb', color: '#d97706', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
-          ⚠️ Без FMP-ключа недоступны: капитализация, % роста и история за 4 квартала.
+        <div style={{ background: '#eff6ff', color: '#2563eb', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>
+          ℹ️ Капитализация, EPS Growth (QoQ) и история EPS за 4 квартала уже работают через Finnhub. Без FMP-ключа не будет: EPS Growth YoY и всё, что касается Revenue Growth/истории по выручке.
         </div>
       )}
 

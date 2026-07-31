@@ -15,6 +15,9 @@ async function fmpJson(url: string) {
   } catch { return null }
 }
 
+// Same shape, kept as a separate name so it's obvious which provider a call is hitting at a glance.
+const fhJson = fmpJson
+
 // Find the entry in a company's own earnings history ~1 year before the target date (same fiscal quarter last year)
 function findYoyEntry(targetDate: string, hist: any[]) {
   const t = new Date(targetDate)
@@ -47,6 +50,20 @@ function findQoqEntry(targetDate: string, hist: any[]) {
 function growthPct(current: number | null | undefined, prior: number | null | undefined) {
   if (current == null || prior == null || prior === 0) return null
   return ((current - prior) / Math.abs(prior)) * 100
+}
+
+// The calendar's `date` is the report/filing date; history entries are keyed by fiscal period-end
+// date, which is typically 20-60 days earlier. If a company just reported, its own quarter now
+// shows up in `hist` dated close to (but before) the report date -- comparing against the report
+// date directly would let YoY/QoQ pick that same quarter as its own "prior" period (a quarter
+// diffed against itself yields exactly 0% growth, which is how this bug surfaced). Resolving to the
+// history's own most-recent date first sidesteps that whenever it represents the just-reported quarter.
+function resolveSelfDate(reportDate: string, hist: any[]): string {
+  if (hist.length === 0) return reportDate
+  const latest = [...hist].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]
+  if (!latest?.date) return reportDate
+  const gapDays = (new Date(reportDate).getTime() - new Date(latest.date).getTime()) / (1000 * 60 * 60 * 24)
+  return (gapDays >= 0 && gapDays <= 100) ? latest.date : reportDate
 }
 
 // Build the "last 4 reported quarters" panel from a company's own history, with YoY/QoQ growth
@@ -163,12 +180,12 @@ export async function POST(req: NextRequest) {
       e.epsEstimated != null || e.epsActual != null || e.revenueEstimated != null || e.revenueActual != null
     )
 
-    if (fmpKey) {
-      // Market cap (shown as a column, no longer used to filter) + YoY/QoQ growth + last-4-quarters
-      // history all come from two per-symbol FMP calls: `profile` (marketCap in one shot) and
-      // `earnings` (own quarterly history). A previously-tried `market-capitalization-batch` endpoint
-      // turned out to be unreliable on this plan (silently rejects arbitrary symbols regardless of
-      // batch size), so this fetches per symbol instead.
+    if (finnhubKey || fmpKey) {
+      // Market cap and EPS history/growth come from Finnhub (`profile2` + `stock/earnings`) --
+      // reliable and free, but Finnhub only returns 4 quarters of EPS history (no revenue at all),
+      // which covers QoQ growth and the last-4-quarters panel but isn't quite enough history for
+      // YoY. FMP's `earnings` endpoint (when its quota isn't exhausted) adds a 5th quarter back plus
+      // revenue, so it's kept as a supplementary source layered on top rather than the primary one.
       // Scoped to today's reporters only -- see MAX_ENRICH_LOOKUPS comment above.
       let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
@@ -176,20 +193,38 @@ export async function POST(req: NextRequest) {
       const capBySymbol = new Map<string, number>()
       const historyBySymbol = new Map<string, any[]>()
       await Promise.all(symbols.map(async (sym) => {
-        const [profileData, historyData] = await Promise.all([
-          fmpJson(`https://financialmodelingprep.com/stable/profile?symbol=${sym}&apikey=${fmpKey}`),
-          // This plan's earnings history endpoint caps `limit` at 5 -- a higher value fails outright.
-          fmpJson(`https://financialmodelingprep.com/stable/earnings?symbol=${sym}&limit=5&apikey=${fmpKey}`),
+        const [fhProfile, fhHist, fmpHist] = await Promise.all([
+          finnhubKey ? fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`) : Promise.resolve(null),
+          finnhubKey ? fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`) : Promise.resolve(null),
+          // This plan's FMP earnings-history endpoint caps `limit` at 5 -- a higher value fails outright.
+          fmpKey ? fmpJson(`https://financialmodelingprep.com/stable/earnings?symbol=${sym}&limit=5&apikey=${fmpKey}`) : Promise.resolve(null),
         ])
-        const p = Array.isArray(profileData) ? profileData[0] : profileData
-        if (p?.marketCap != null) capBySymbol.set(sym, p.marketCap)
-        if (Array.isArray(historyData)) historyBySymbol.set(sym, historyData)
+
+        if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
+
+        const byDate = new Map<string, any>()
+        if (Array.isArray(fhHist)) {
+          fhHist.forEach((h: any) => { if (h.period) byDate.set(h.period, { date: h.period, epsActual: h.actual, revenueActual: null }) })
+        }
+        if (Array.isArray(fmpHist)) {
+          fmpHist.forEach((h: any) => {
+            if (!h.date) return
+            const existing = byDate.get(h.date)
+            byDate.set(h.date, {
+              date: h.date,
+              epsActual: h.epsActual ?? existing?.epsActual ?? null,
+              revenueActual: h.revenueActual ?? existing?.revenueActual ?? null,
+            })
+          })
+        }
+        historyBySymbol.set(sym, Array.from(byDate.values()))
       }))
 
       earnings = earnings.map(e => {
         const hist = historyBySymbol.get(e.symbol) || []
-        const yoy = findYoyEntry(e.date, hist)
-        const qoq = findQoqEntry(e.date, hist)
+        const selfDate = resolveSelfDate(e.date, hist)
+        const yoy = findYoyEntry(selfDate, hist)
+        const qoq = findQoqEntry(selfDate, hist)
         const epsForGrowth = e.epsActual ?? e.epsEstimated
         const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
         return {
