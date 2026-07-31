@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Safety cap so a heavy earnings-season window can't trigger an unbounded number of FMP calls.
-// Each enriched symbol costs 2 FMP calls (profile + earnings history); with the ~2 calls for the
-// base calendar fetch, 120 symbols keeps a single page load under ~250 calls -- a typical free-tier
-// daily FMP quota.
-const MAX_ENRICH_LOOKUPS = 120
+// Enrichment (market cap, growth%, last-4-quarters) costs 2 FMP calls per symbol. Doing that for
+// the whole past+next 7 day window (hundreds of tickers) burns an entire day's free-tier quota in
+// one page load. Scoping it to just today's reporters keeps it to a few dozen calls -- comfortably
+// under a typical 250/day cap -- while past/future rows still get the free base data (ticker, EPS,
+// revenue, surprise %) straight from the calendar fetch.
+const MAX_ENRICH_LOOKUPS = 200
 
 async function fmpJson(url: string) {
   try {
@@ -151,7 +152,8 @@ export async function POST(req: NextRequest) {
       // `earnings` (own quarterly history). A previously-tried `market-capitalization-batch` endpoint
       // turned out to be unreliable on this plan (silently rejects arbitrary symbols regardless of
       // batch size), so this fetches per symbol instead.
-      let symbols = Array.from(new Set(earnings.map(e => e.symbol).filter(Boolean)))
+      // Scoped to today's reporters only -- see MAX_ENRICH_LOOKUPS comment above.
+      let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()

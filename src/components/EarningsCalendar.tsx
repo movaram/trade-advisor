@@ -146,7 +146,7 @@ export default function EarningsCalendar() {
       </div>
 
       <div style={{ fontSize: 13, color: '#6b6b68', marginBottom: '1rem' }}>
-        {filtered.length} companies · all US market caps · click a row for the last 4 quarters
+        {filtered.length} companies{period === 'today' ? ' · market cap, growth % and last-4-quarters history available (click a row)' : ' · full history/growth available on the Today tab to stay within API limits'}
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>{error}</div>}
