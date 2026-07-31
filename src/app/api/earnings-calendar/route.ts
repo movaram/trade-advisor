@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const MIN_MARKET_CAP = 30_000_000
-// Safety cap so a heavy earnings-season week can't trigger an unbounded number of FMP calls
-const MAX_ENRICH_LOOKUPS = 150
+// Safety cap so a heavy earnings-season window can't trigger an unbounded number of FMP calls.
+// Each enriched symbol costs 2 FMP calls (profile + earnings history); with the ~2 calls for the
+// base calendar fetch, 120 symbols keeps a single page load under ~250 calls -- a typical free-tier
+// daily FMP quota.
+const MAX_ENRICH_LOOKUPS = 120
 
 async function fmpJson(url: string) {
   try {
@@ -44,6 +46,27 @@ function findQoqEntry(targetDate: string, hist: any[]) {
 function growthPct(current: number | null | undefined, prior: number | null | undefined) {
   if (current == null || prior == null || prior === 0) return null
   return ((current - prior) / Math.abs(prior)) * 100
+}
+
+// Build the "last 4 reported quarters" panel from a company's own history, with YoY/QoQ growth
+// computed per quarter against the rest of that same history list.
+function buildLast4(hist: any[]) {
+  const reported = hist.filter(h => h.epsActual != null || h.revenueActual != null)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    .slice(0, 4)
+  return reported.map(h => {
+    const yoy = findYoyEntry(h.date, hist)
+    const qoq = findQoqEntry(h.date, hist)
+    return {
+      date: h.date,
+      epsActual: h.epsActual,
+      revenueActual: h.revenueActual,
+      epsGrowthPctYoy: yoy ? growthPct(h.epsActual, yoy.epsActual) : null,
+      revenueGrowthPctYoy: yoy ? growthPct(h.revenueActual, yoy.revenueActual) : null,
+      epsGrowthPctQoq: qoq ? growthPct(h.epsActual, qoq.epsActual) : null,
+      revenueGrowthPctQoq: qoq ? growthPct(h.revenueActual, qoq.revenueActual) : null,
+    }
+  })
 }
 
 export async function POST(req: NextRequest) {
@@ -123,36 +146,26 @@ export async function POST(req: NextRequest) {
     )
 
     if (fmpKey) {
-      // Market cap + US-exchange + YoY growth all come from two per-symbol FMP calls:
-      // `profile` (marketCap + country in one shot) and `earnings` (own quarterly history, for YoY comparison).
-      // A previously-tried `market-capitalization-batch` endpoint turned out to be unreliable on this
-      // plan (silently rejects arbitrary symbols independent of batch size), so this fetches per symbol instead.
+      // Market cap (shown as a column, no longer used to filter) + YoY/QoQ growth + last-4-quarters
+      // history all come from two per-symbol FMP calls: `profile` (marketCap in one shot) and
+      // `earnings` (own quarterly history). A previously-tried `market-capitalization-batch` endpoint
+      // turned out to be unreliable on this plan (silently rejects arbitrary symbols regardless of
+      // batch size), so this fetches per symbol instead.
       let symbols = Array.from(new Set(earnings.map(e => e.symbol).filter(Boolean)))
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
-      const countryBySymbol = new Map<string, string>()
       const historyBySymbol = new Map<string, any[]>()
       await Promise.all(symbols.map(async (sym) => {
         const [profileData, historyData] = await Promise.all([
           fmpJson(`https://financialmodelingprep.com/stable/profile?symbol=${sym}&apikey=${fmpKey}`),
-          fmpJson(`https://financialmodelingprep.com/stable/earnings?symbol=${sym}&limit=6&apikey=${fmpKey}`),
+          // This plan's earnings history endpoint caps `limit` at 5 -- a higher value fails outright.
+          fmpJson(`https://financialmodelingprep.com/stable/earnings?symbol=${sym}&limit=5&apikey=${fmpKey}`),
         ])
         const p = Array.isArray(profileData) ? profileData[0] : profileData
         if (p?.marketCap != null) capBySymbol.set(sym, p.marketCap)
-        if (p?.country) countryBySymbol.set(sym, p.country)
         if (Array.isArray(historyData)) historyBySymbol.set(sym, historyData)
       }))
-
-      // Keep >= $30M and US-listed; keep unresolved lookups too (better to show a company than
-      // wrongly hide one because a single FMP call failed or the symbol wasn't in scope of this pass)
-      earnings = earnings.filter(e => {
-        const cap = capBySymbol.get(e.symbol)
-        const country = countryBySymbol.get(e.symbol)
-        const capOk = cap == null || cap >= MIN_MARKET_CAP
-        const countryOk = country == null || country === 'US'
-        return capOk && countryOk
-      })
 
       earnings = earnings.map(e => {
         const hist = historyBySymbol.get(e.symbol) || []
@@ -162,17 +175,19 @@ export async function POST(req: NextRequest) {
         const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
         return {
           ...e,
+          marketCap: capBySymbol.get(e.symbol) ?? null,
           epsGrowthPctYoy: yoy ? growthPct(epsForGrowth, yoy.epsActual) : null,
           revenueGrowthPctYoy: yoy ? growthPct(revenueForGrowth, yoy.revenueActual) : null,
           epsGrowthPctQoq: qoq ? growthPct(epsForGrowth, qoq.epsActual) : null,
           revenueGrowthPctQoq: qoq ? growthPct(revenueForGrowth, qoq.revenueActual) : null,
+          last4: buildLast4(hist),
         }
       })
     }
 
     earnings.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
 
-    return NextResponse.json({ earnings: earnings.slice(0, 300) })
+    return NextResponse.json({ earnings: earnings.slice(0, 500) })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }

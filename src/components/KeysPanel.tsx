@@ -7,14 +7,13 @@ export default function KeysPanel() {
   const [massive, setMassive] = useState(keys.massive)
   const [finnhub, setFinnhub] = useState(keys.finnhub)
   const [fmp, setFmp] = useState(keys.fmp || '')
-  const [anthropic, setAnthropic] = useState(keys.anthropic || '')
   const [saved, setSaved] = useState(false)
-  const [open, setOpen] = useState(!(keys.finnhub || keys.fmp || keys.massive || keys.anthropic))
+  const [open, setOpen] = useState(!(keys.finnhub || keys.fmp || keys.massive))
 
-  const filledCount = [keys.massive, keys.finnhub, keys.fmp, keys.anthropic].filter(Boolean).length
+  const filledCount = [keys.massive, keys.finnhub, keys.fmp].filter(Boolean).length
 
   function save() {
-    setKeys({ massive, finnhub, fmp, anthropic })
+    setKeys({ massive, finnhub, fmp })
     setSaved(true)
     setTimeout(() => setSaved(false), 1500)
     setOpen(false)
@@ -26,7 +25,7 @@ export default function KeysPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>API Keys</span>
           {!open && (
-            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{filledCount}/4 saved</span>
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{filledCount}/3 saved</span>
           )}
         </div>
         <button onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none', color: 'var(--text-2)', fontSize: 12, cursor: 'pointer', padding: '2px 6px' }}>
@@ -35,7 +34,7 @@ export default function KeysPanel() {
       </div>
 
       {open && <>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
           <div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Massive / Polygon</div>
             <input type="password" value={massive} onChange={e => setMassive(e.target.value)} placeholder="Paste key..." />
@@ -47,10 +46,6 @@ export default function KeysPanel() {
           <div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>FMP (Financial Modeling Prep)</div>
             <input type="password" value={fmp} onChange={e => setFmp(e.target.value)} placeholder="Paste key..." />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>Anthropic (AI chat)</div>
-            <input type="password" value={anthropic} onChange={e => setAnthropic(e.target.value)} placeholder="Paste key..." />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

@@ -2,22 +2,13 @@
 import { useState } from 'react'
 import { KeysProvider } from '@/lib/keys'
 import KeysPanel from '@/components/KeysPanel'
-import TradeChecker from '@/components/TradeChecker'
-import CatalystScanner from '@/components/CatalystScanner'
 import SecLive from '@/components/SecLive'
 import EarningsCalendar from '@/components/EarningsCalendar'
-import MarketBrief from '@/components/MarketBrief'
 
-const TABS = ['Trade checker', 'Catalyst scanner', 'SEC live', 'Earnings calendar', 'Market brief']
+const TABS = ['Earnings calendar', 'SEC live']
 
 export default function Home() {
   const [tab, setTab] = useState(0)
-  const [deepTicker, setDeepTicker] = useState('')
-
-  function handleDeepDive(ticker: string) {
-    setDeepTicker(ticker)
-    setTab(0)
-  }
 
   return (
     <KeysProvider>
@@ -26,7 +17,7 @@ export default function Home() {
           <div style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: 16 }}>
             <div>
               <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 2 }}>Trade Advisor</h1>
-              <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Swing trading research — fundamentals, filings, news, catalyst scanner</p>
+              <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Earnings calendar &amp; live SEC filings</p>
             </div>
           </div>
 
@@ -45,11 +36,8 @@ export default function Home() {
             ))}
           </div>
 
-          {tab === 0 && <TradeChecker initialTicker={deepTicker} />}
-          {tab === 1 && <CatalystScanner onDeepDive={handleDeepDive} />}
-          {tab === 2 && <SecLive />}
-          {tab === 3 && <EarningsCalendar />}
-          {tab === 4 && <MarketBrief />}
+          {tab === 0 && <EarningsCalendar />}
+          {tab === 1 && <SecLive />}
         </div>
       </main>
     </KeysProvider>
