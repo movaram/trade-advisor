@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Enrichment (market cap, growth%, quarterly history) costs a handful of Finnhub calls per symbol.
-// Scoping it to just today's reporters keeps a single page load to a few hundred calls at most,
-// comfortably inside Finnhub's 60/min budget, instead of running it across the whole 14-day window.
-const MAX_ENRICH_LOOKUPS = 150
+// Enrichment costs 3 Finnhub calls per symbol, batched (see ENRICH_BATCH_SIZE below) to stay under
+// Finnhub's 60/min limit. Each batch adds ~1s of delay, so this also bounds total page-load time --
+// at 60 symbols that's ~4 batches / ~3-4s of added delay, safely inside a serverless function's
+// timeout; much higher and a very busy reporting day could push the request past it.
+const MAX_ENRICH_LOOKUPS = 60
 
 async function fhJson(url: string) {
   try {
@@ -124,6 +125,49 @@ function withYoy(discrete: ReturnType<typeof deriveDiscreteQuarters>) {
   })
 }
 
+function annualHistoryFromReports(annualReports: any[]) {
+  const years = annualReports
+    .map((r: any) => ({
+      year: r.year,
+      date: typeof r.endDate === 'string' ? r.endDate.split(' ')[0] : null,
+      eps: extractConcept(r.report?.ic || [], EPS_CONCEPTS),
+      revenue: extractConcept(r.report?.ic || [], REVENUE_CONCEPTS),
+    }))
+    .sort((a, b) => b.year - a.year)
+  return years.map((y, i) => {
+    const prior = years[i + 1]
+    return {
+      date: y.date,
+      year: y.year,
+      eps: y.eps,
+      revenue: y.revenue,
+      epsYoyPct: prior ? growthPct(y.eps, prior.eps) : null,
+      revenueYoyPct: prior ? growthPct(y.revenue, prior.revenue) : null,
+    }
+  })
+}
+
+// Find the quarter in `quarters` closest to one year before `reportDate`, used to compute the main
+// row's own growth% even before that exact quarter has been formally filed (financials-reported
+// lags the earnings announcement by several weeks). This can occasionally compare the earnings
+// calendar's adjusted "actual" EPS against a GAAP prior-year figure -- usually a close enough
+// approximation, but can be noisy for companies with large one-time GAAP charges (see the EPS
+// disclaimer shown next to the quarterly table).
+function findYoyMatch(reportDate: string, quarters: { date: string | null }[]) {
+  const t = new Date(reportDate)
+  let best: any = null, bestDiff = Infinity
+  for (const q of quarters) {
+    if (!q.date) continue
+    const qd = new Date(q.date)
+    const yearsDiff = t.getFullYear() - qd.getFullYear()
+    if (yearsDiff < 0 || yearsDiff > 1) continue
+    const alignedLastYear = new Date(qd.getFullYear() + 1, qd.getMonth(), qd.getDate())
+    const daysDiff = Math.abs((t.getTime() - alignedLastYear.getTime()) / (1000 * 60 * 60 * 24))
+    if (daysDiff < bestDiff) { bestDiff = daysDiff; best = q }
+  }
+  return bestDiff <= 60 ? best : null
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { fmpKey, finnhubKey } = await req.json()
@@ -227,33 +271,60 @@ export async function POST(req: NextRequest) {
 
       const capBySymbol = new Map<string, number>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withYoy>>()
-      await Promise.all(symbols.map(async (sym) => {
-        const [fhProfile, quarterlyData, annualData] = await Promise.all([
-          fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
-          fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`),
-          fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=annual&token=${finnhubKey}`),
-        ])
+      const annualBySymbol = new Map<string, ReturnType<typeof annualHistoryFromReports>>()
 
-        if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
+      // 3 Finnhub calls per symbol, fired as one giant Promise.all, reliably triggered 429s on any
+      // day with more than ~20 reporters (429s came back as ordinary failed fetches, which the
+      // graceful-null handling in fhJson silently swallowed -- every row's enrichment went blank at
+      // once, not just the "overflow" ones). Batching keeps each burst small enough to actually
+      // succeed; it trades some page-load time for enrichment that reliably comes back non-empty.
+      const ENRICH_BATCH_SIZE = 15
+      const ENRICH_BATCH_DELAY_MS = 1000
+      for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
+        const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
+        await Promise.all(batch.map(async (sym) => {
+          const [fhProfile, quarterlyData, annualData] = await Promise.all([
+            fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
+            fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`),
+            fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=annual&token=${finnhubKey}`),
+          ])
 
-        const quarterlyReports = Array.isArray(quarterlyData?.data) ? quarterlyData.data : []
-        const annualReports = Array.isArray(annualData?.data) ? annualData.data : []
-        const discrete = withYoy(deriveDiscreteQuarters(quarterlyReports, annualReports)).slice(0, 8)
-        quartersBySymbol.set(sym, discrete)
-      }))
+          if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
+
+          const quarterlyReports = Array.isArray(quarterlyData?.data) ? quarterlyData.data : []
+          const annualReports = Array.isArray(annualData?.data) ? annualData.data : []
+          const discrete = withYoy(deriveDiscreteQuarters(quarterlyReports, annualReports)).slice(0, 8)
+          quartersBySymbol.set(sym, discrete)
+          annualBySymbol.set(sym, annualHistoryFromReports(annualReports).slice(0, 6))
+        }))
+        if (i + ENRICH_BATCH_SIZE < symbols.length) {
+          await new Promise(resolve => setTimeout(resolve, ENRICH_BATCH_DELAY_MS))
+        }
+      }
 
       earnings = earnings.map(e => {
         const quarters = quartersBySymbol.get(e.symbol) || []
-        // The most recent derived quarter only represents *this* report once it's been formally
-        // filed (10-Q/10-K) -- until then leave the row's own growth% blank rather than guess.
-        const latest = quarters[0]
-        const isLatestThisReport = latest?.date && Math.abs(new Date(e.date).getTime() - new Date(latest.date).getTime()) / 86400000 <= 100
+        // The exact quarter being reported today usually isn't in `quarters` yet (financials-reported
+        // lags the earnings announcement by several weeks until the 10-Q/10-K is formally filed), so
+        // find whichever derived quarter sits closest to a year before today's report date instead.
+        const yoyMatch = findYoyMatch(e.date, quarters)
+        const epsForGrowth = e.epsActual ?? e.epsEstimated
+        const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
+        let epsGrowthPctYoy = yoyMatch ? growthPct(epsForGrowth, yoyMatch.eps) : null
+        const revenueGrowthPctYoy = yoyMatch ? growthPct(revenueForGrowth, yoyMatch.revenue) : null
+        // This row's EPS is the calendar's adjusted/non-GAAP "actual", diffed against a GAAP prior-
+        // year figure -- usually close enough, but for companies where the two diverge a lot (large
+        // M&A/impairment charges) it can produce an implausible swing. Suppress anything this extreme
+        // on the headline row rather than show a misleading number; the quarterly table below is
+        // GAAP-consistent throughout and isn't subject to this, so it's shown uncapped there.
+        if (epsGrowthPctYoy != null && Math.abs(epsGrowthPctYoy) > 300) epsGrowthPctYoy = null
         return {
           ...e,
           marketCap: capBySymbol.get(e.symbol) ?? null,
-          epsGrowthPctYoy: isLatestThisReport ? latest.epsYoyPct : null,
-          revenueGrowthPctYoy: isLatestThisReport ? latest.revenueYoyPct : null,
+          epsGrowthPctYoy,
+          revenueGrowthPctYoy,
           quarterlyHistory: quarters,
+          annualHistory: annualBySymbol.get(e.symbol) || [],
         }
       })
     }
