@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Enrichment costs 3 Finnhub calls per symbol, batched (see ENRICH_BATCH_SIZE below) to stay under
-// Finnhub's 60/min limit. Each batch adds ~1s of delay, so this also bounds total page-load time --
-// at 60 symbols that's ~4 batches / ~3-4s of added delay, safely inside a serverless function's
-// timeout; much higher and a very busy reporting day could push the request past it.
+// SEC calls (companyfacts payloads run 1-3MB each) take longer than the old all-Finnhub version.
+// Default serverless timeout (10s) isn't enough headroom on a busy earnings day; this raises it.
+export const maxDuration = 60
+
+const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
+
+// Enrichment now costs 1 Finnhub call (market cap) + 1 SEC call (EPS/Sales history) per symbol,
+// batched to stay polite to both providers -- Finnhub's 60/min limit and SEC's ~10 req/sec fair-use
+// guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10 that's ~5s of added delay
+// plus fetch time, well inside the 60s ceiling set above.
 const MAX_ENRICH_LOOKUPS = 60
 
 async function fhJson(url: string) {
@@ -32,87 +38,199 @@ function growthPct(current: number | null | undefined, prior: number | null | un
 // tries the common tags in priority order; it won't be perfect for every company, but covers the
 // vast majority for free.
 const REVENUE_CONCEPTS = [
-  'us-gaap_Revenues',
-  'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax',
-  'us-gaap_RevenueFromContractWithCustomerIncludingAssessedTax',
-  'us-gaap_SalesRevenueNet',
-  'us-gaap_SalesRevenueGoodsNet',
-  'us-gaap_SalesRevenueServicesNet',
-  'us-gaap_InterestAndDividendIncomeOperating',
-  'us-gaap_InterestIncomeExpenseNet',
-  'us-gaap_NoninterestIncome',
-  'us-gaap_TotalRevenuesAndOtherIncome',
+  'Revenues',
+  'RevenueFromContractWithCustomerExcludingAssessedTax',
+  'RevenueFromContractWithCustomerIncludingAssessedTax',
+  'SalesRevenueNet',
+  'SalesRevenueGoodsNet',
+  'SalesRevenueServicesNet',
+  'InterestAndDividendIncomeOperating',
+  'InterestIncomeExpenseNet',
+  'NoninterestIncome',
+  'TotalRevenuesAndOtherIncome',
 ]
-const EPS_CONCEPTS = ['us-gaap_EarningsPerShareDiluted', 'us-gaap_EarningsPerShareBasic']
+const EPS_CONCEPTS = ['EarningsPerShareDiluted', 'EarningsPerShareBasic']
 
-function extractConcept(ic: any[], concepts: string[]): number | null {
-  for (const concept of concepts) {
-    const item = ic.find((x: any) => x.concept === concept)
-    if (typeof item?.value === 'number') return item.value
+// --- SEC EDGAR XBRL: ticker -> CIK lookup, cached in-module for the life of the serverless instance ---
+let tickerCikCache: { map: Map<string, string>; ts: number } | null = null
+const TICKER_CIK_TTL_MS = 24 * 60 * 60 * 1000
+
+async function getTickerCikMap(): Promise<Map<string, string>> {
+  if (tickerCikCache && Date.now() - tickerCikCache.ts < TICKER_CIK_TTL_MS) return tickerCikCache.map
+  try {
+    const r = await fetch('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': SEC_AGENT } })
+    if (!r.ok) return tickerCikCache?.map || new Map()
+    const data = await r.json()
+    const map = new Map<string, string>()
+    Object.values(data as any).forEach((entry: any) => {
+      if (entry?.ticker && entry?.cik_str != null) {
+        map.set(String(entry.ticker).toUpperCase(), String(entry.cik_str).padStart(10, '0'))
+      }
+    })
+    tickerCikCache = { map, ts: Date.now() }
+    return map
+  } catch {
+    return tickerCikCache?.map || new Map()
   }
-  return null
 }
 
-function sub(a: number | null, b: number | null): number | null {
-  return a == null || b == null ? null : a - b
+async function fetchSecFacts(cik: string) {
+  try {
+    const r = await fetch(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
+    if (!r.ok) return null
+    return await r.json()
+  } catch { return null }
 }
 
-// William O'Neil (CANSLIM) / Pradeep Bonde (Stockbee)-style quarterly table: each quarter's EPS and
-// Sales compared to the *same calendar quarter one year earlier* (never sequential quarter-to-quarter,
-// since most businesses are seasonal and QoQ comparisons are noisy). Building this needs single-
-// quarter (not cumulative) EPS/revenue going back 2+ years, which Finnhub doesn't hand over directly:
-//
-//   - `stock/financials-reported freq=quarterly` gives Q1 as a clean 3-month figure, but Q2 comes back
-//     as Jan-Jun (6mo cumulative) and Q3 as Jan-Sep (9mo cumulative) -- not the discrete quarter.
-//   - `freq=annual` gives the full fiscal year (10-K).
-//
-// Discrete quarters are recovered by subtraction: Q2 = H1 - Q1, Q3 = 9mo - H1, Q4 = FY - 9mo. This
-// also keeps EPS and revenue on the *same* GAAP basis throughout, avoiding a bug from an earlier
-// version of this route: mixing GAAP EPS (from financials-reported) with adjusted/non-GAAP "actual"
-// EPS (from the earnings calendar) produced nonsense growth like +800% for companies where the two
-// diverge a lot (AbbVie, due to large acquisition-related charges, was the case that surfaced it).
-function deriveDiscreteQuarters(quarterlyReports: any[], annualReports: any[]) {
-  const qByKey = new Map<string, { eps: number | null; revenue: number | null; endDate: string | null }>()
-  quarterlyReports.forEach((r: any) => {
-    const ic = r.report?.ic || []
-    qByKey.set(`${r.year}-Q${r.quarter}`, {
-      eps: extractConcept(ic, EPS_CONCEPTS),
-      revenue: extractConcept(ic, REVENUE_CONCEPTS),
-      endDate: typeof r.endDate === 'string' ? r.endDate.split(' ')[0] : null,
-    })
-  })
-  const annualByYear = new Map<number, { eps: number | null; revenue: number | null; endDate: string | null }>()
-  annualReports.forEach((r: any) => {
-    const ic = r.report?.ic || []
-    annualByYear.set(r.year, {
-      eps: extractConcept(ic, EPS_CONCEPTS),
-      revenue: extractConcept(ic, REVENUE_CONCEPTS),
-      endDate: typeof r.endDate === 'string' ? r.endDate.split(' ')[0] : null,
-    })
-  })
-
-  const years = new Set(quarterlyReports.map((r: any) => r.year))
-  const discrete: { year: number; quarter: number; date: string | null; eps: number | null; revenue: number | null }[] = []
-  years.forEach(year => {
-    const q1 = qByKey.get(`${year}-Q1`)
-    const h1 = qByKey.get(`${year}-Q2`) // cumulative Jan-Jun
-    const m9 = qByKey.get(`${year}-Q3`) // cumulative Jan-Sep
-    const fy = annualByYear.get(year)
-
-    if (q1) discrete.push({ year, quarter: 1, date: q1.endDate, eps: q1.eps, revenue: q1.revenue })
-    if (h1 && q1) discrete.push({ year, quarter: 2, date: h1.endDate, eps: sub(h1.eps, q1.eps), revenue: sub(h1.revenue, q1.revenue) })
-    if (m9 && h1) discrete.push({ year, quarter: 3, date: m9.endDate, eps: sub(m9.eps, h1.eps), revenue: sub(m9.revenue, h1.revenue) })
-    if (fy && m9) discrete.push({ year, quarter: 4, date: fy.endDate, eps: sub(fy.eps, m9.eps), revenue: sub(fy.revenue, m9.revenue) })
-  })
-
-  discrete.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
-  return discrete
+// company_tickers.json occasionally points a ticker at a CIK with zero XBRL facts -- observed live
+// for XOM, which the static file currently maps to a freshly-created holding-company CIK that has
+// never filed anything, while the real 10-Q/10-K history still lives under Exxon's original CIK.
+// browse-edgar's ticker resolution stays in sync with actual filers, so it's used as a fallback only
+// when the primary lookup comes back empty (keeps this to one extra SEC call for the rare mismatch).
+async function resolveCikViaBrowseEdgar(ticker: string): Promise<string | null> {
+  try {
+    const r = await fetch(
+      `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(ticker)}&type=10-K&dateb=&owner=include&count=1&output=atom`,
+      { headers: { 'User-Agent': SEC_AGENT } }
+    )
+    if (!r.ok) return null
+    const text = await r.text()
+    const m = text.match(/<cik>(\d+)<\/cik>/)
+    return m ? m[1].padStart(10, '0') : null
+  } catch { return null }
 }
 
-// Attach YoY %Chg to each quarter by finding the same quarter number exactly one year earlier.
-function withYoy(discrete: ReturnType<typeof deriveDiscreteQuarters>) {
-  return discrete.map(q => {
-    const prior = discrete.find(x => x.year === q.year - 1 && x.quarter === q.quarter)
+async function fetchSecFactsForSymbol(symbol: string, cik: string | undefined) {
+  let facts = cik ? await fetchSecFacts(cik) : null
+  const hasUsGaap = Object.keys(facts?.facts?.['us-gaap'] || {}).length > 0
+  if (!hasUsGaap) {
+    const fallbackCik = await resolveCikViaBrowseEdgar(symbol)
+    if (fallbackCik && fallbackCik !== cik) facts = await fetchSecFacts(fallbackCik)
+  }
+  return facts
+}
+
+function spanDays(item: any): number | null {
+  if (!item.start || !item.end) return null
+  const s = new Date(item.start).getTime()
+  const e = new Date(item.end).getTime()
+  if (Number.isNaN(s) || Number.isNaN(e)) return null
+  return (e - s) / (1000 * 60 * 60 * 24)
+}
+
+// SEC tags both the discrete 3-month figure AND the cumulative year-to-date figure (e.g. Jan-Sep)
+// under the *same* concept/fy/fp -- they only differ by `start` date. Filtering by span picks out
+// the discrete one. Facts also get re-filed with each subsequent quarter's comparatives, producing
+// duplicate entries for the same `end` date; keep whichever was filed earliest (the as-first-reported
+// value), matching what O'Neil/Bonde-style analysis expects.
+function extractSeriesByEnd(facts: any, concepts: string[], predicate: (item: any) => boolean): Map<string, any> {
+  for (const concept of concepts) {
+    const unitsObj = facts?.facts?.['us-gaap']?.[concept]?.units
+    if (!unitsObj) continue
+    for (const unitKey of Object.keys(unitsObj)) {
+      const items = (unitsObj[unitKey] as any[]).filter(
+        (it) => typeof it.val === 'number' && it.fy != null && it.fp && it.end && predicate(it)
+      )
+      if (items.length === 0) continue
+      const byEnd = new Map<string, any>()
+      items.forEach((it) => {
+        const existing = byEnd.get(it.end)
+        if (!existing || (it.filed && existing.filed && it.filed < existing.filed)) byEnd.set(it.end, it)
+      })
+      return byEnd
+    }
+  }
+  return new Map()
+}
+
+const FP_TO_QUARTER: Record<string, number> = { Q1: 1, Q2: 2, Q3: 3, Q4: 4 }
+const isDiscreteQuarter = (it: any) => {
+  const d = spanDays(it)
+  return it.fp !== 'FY' && d != null && d >= 80 && d <= 100
+}
+const isAnnual = (it: any) => {
+  const d = spanDays(it)
+  return it.fp === 'FY' && d != null && d >= 350 && d <= 380
+}
+// 10-Ks report the full fiscal year, not a standalone Q4 -- SEC has no discrete Q4 XBRL fact for
+// most companies. This catches the Jan-Sep cumulative figure (same concept/fy, fp still tagged 'Q3')
+// so Q4 can be derived as FY minus 9mo, same as the pre-SEC Finnhub-based approach did.
+const isCumulative9mo = (it: any) => {
+  const d = spanDays(it)
+  return it.fp === 'Q3' && d != null && d >= 260 && d <= 285
+}
+
+function seriesByFy(mapByEnd: Map<string, any>): Map<number, any> {
+  const m = new Map<number, any>()
+  mapByEnd.forEach((it) => m.set(it.fy, it))
+  return m
+}
+
+function buildQuartersFromFacts(facts: any) {
+  const epsByEnd = extractSeriesByEnd(facts, EPS_CONCEPTS, isDiscreteQuarter)
+  const revByEnd = extractSeriesByEnd(facts, REVENUE_CONCEPTS, isDiscreteQuarter)
+  const ends = new Set<string>()
+  epsByEnd.forEach((_, k) => ends.add(k))
+  revByEnd.forEach((_, k) => ends.add(k))
+  const quarters = Array.from(ends).map((end) => {
+    const epsItem = epsByEnd.get(end)
+    const revItem = revByEnd.get(end)
+    const src = epsItem || revItem
+    return {
+      date: end as string,
+      year: src.fy as number,
+      quarter: FP_TO_QUARTER[src.fp] ?? null,
+      eps: epsItem?.val ?? null,
+      revenue: revItem?.val ?? null,
+    }
+  })
+
+  const epsAnnualByFy = seriesByFy(extractSeriesByEnd(facts, EPS_CONCEPTS, isAnnual))
+  const revAnnualByFy = seriesByFy(extractSeriesByEnd(facts, REVENUE_CONCEPTS, isAnnual))
+  const eps9moByFy = seriesByFy(extractSeriesByEnd(facts, EPS_CONCEPTS, isCumulative9mo))
+  const rev9moByFy = seriesByFy(extractSeriesByEnd(facts, REVENUE_CONCEPTS, isCumulative9mo))
+  const existingQ4Years = new Set(quarters.filter(q => q.quarter === 4).map(q => q.year))
+  const allFy = new Set<number>()
+  epsAnnualByFy.forEach((_, fy) => allFy.add(fy))
+  revAnnualByFy.forEach((_, fy) => allFy.add(fy))
+  allFy.forEach((fy) => {
+    if (existingQ4Years.has(fy)) return
+    const epsA = epsAnnualByFy.get(fy), revA = revAnnualByFy.get(fy)
+    const eps9 = eps9moByFy.get(fy), rev9 = rev9moByFy.get(fy)
+    const epsVal = (epsA && eps9) ? epsA.val - eps9.val : null
+    const revVal = (revA && rev9) ? revA.val - rev9.val : null
+    if (epsVal == null && revVal == null) return
+    const dateSrc = epsA || revA
+    quarters.push({ date: dateSrc.end, year: fy, quarter: 4, eps: epsVal, revenue: revVal })
+  })
+
+  quarters.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  return quarters
+}
+
+function buildAnnualFromFacts(facts: any) {
+  const epsByEnd = extractSeriesByEnd(facts, EPS_CONCEPTS, isAnnual)
+  const revByEnd = extractSeriesByEnd(facts, REVENUE_CONCEPTS, isAnnual)
+  const ends = new Set<string>()
+  epsByEnd.forEach((_, k) => ends.add(k))
+  revByEnd.forEach((_, k) => ends.add(k))
+  const years = Array.from(ends).map((end) => {
+    const epsItem = epsByEnd.get(end)
+    const revItem = revByEnd.get(end)
+    const src = epsItem || revItem
+    return { date: end as string, year: src.fy as number, eps: epsItem?.val ?? null, revenue: revItem?.val ?? null }
+  })
+  years.sort((a, b) => b.year - a.year)
+  return years
+}
+
+// William O'Neil (CANSLIM) / Pradeep Bonde (Stockbee)-style table: each quarter's EPS and Sales
+// compared to the *same fiscal quarter one year earlier* (never sequential QoQ, since most
+// businesses are seasonal). Matched via SEC's own fy/fp tags rather than calendar-quarter math, so
+// it's correct even for companies with non-calendar fiscal years.
+function withYoy(discrete: ReturnType<typeof buildQuartersFromFacts>) {
+  return discrete.map((q) => {
+    const prior = discrete.find((x) => x.year === q.year - 1 && x.quarter === q.quarter)
     return {
       date: q.date,
       year: q.year,
@@ -125,15 +243,7 @@ function withYoy(discrete: ReturnType<typeof deriveDiscreteQuarters>) {
   })
 }
 
-function annualHistoryFromReports(annualReports: any[]) {
-  const years = annualReports
-    .map((r: any) => ({
-      year: r.year,
-      date: typeof r.endDate === 'string' ? r.endDate.split(' ')[0] : null,
-      eps: extractConcept(r.report?.ic || [], EPS_CONCEPTS),
-      revenue: extractConcept(r.report?.ic || [], REVENUE_CONCEPTS),
-    }))
-    .sort((a, b) => b.year - a.year)
+function annualWithYoy(years: ReturnType<typeof buildAnnualFromFacts>) {
   return years.map((y, i) => {
     const prior = years[i + 1]
     return {
@@ -147,12 +257,11 @@ function annualHistoryFromReports(annualReports: any[]) {
   })
 }
 
-// Find the quarter in `quarters` closest to one year before `reportDate`, used to compute the main
-// row's own growth% even before that exact quarter has been formally filed (financials-reported
-// lags the earnings announcement by several weeks). This can occasionally compare the earnings
-// calendar's adjusted "actual" EPS against a GAAP prior-year figure -- usually a close enough
-// approximation, but can be noisy for companies with large one-time GAAP charges (see the EPS
-// disclaimer shown next to the quarterly table).
+// Find the quarter closest to one year before `reportDate`, used to compute the main row's own
+// growth% even before that exact quarter has been formally filed (the 10-Q/10-K lags the earnings
+// announcement by several weeks). This can occasionally compare the earnings calendar's adjusted
+// "actual" EPS against a GAAP prior-year figure -- usually a close enough approximation, but can be
+// noisy for companies with large one-time GAAP charges (see the EPS disclaimer in the UI).
 function findYoyMatch(reportDate: string, quarters: { date: string | null }[]) {
   const t = new Date(reportDate)
   let best: any = null, bestDiff = Infinity
@@ -262,40 +371,38 @@ export async function POST(req: NextRequest) {
     )
 
     if (finnhubKey) {
-      // Market cap from `profile2`. Quarterly EPS/Sales history (O'Neil/Bonde-style, YoY-only) is
-      // derived from `stock/financials-reported` at both quarterly and annual frequency -- see
-      // deriveDiscreteQuarters() above for why both calls are needed and how discrete quarters are
-      // recovered. Scoped to today's reporters only -- see MAX_ENRICH_LOOKUPS comment above.
+      // Market cap still comes from Finnhub's `profile2` (SEC has no real-time price data). Quarterly
+      // and annual EPS/Sales history (O'Neil/Bonde-style, YoY-only) now comes directly from SEC
+      // EDGAR's XBRL companyfacts API instead of Finnhub's financials-reported -- SEC tags both
+      // discrete and cumulative figures as separate facts, so no derive-by-subtraction is needed, it
+      // goes back many more years, and it's off Finnhub's 60/min budget entirely (SEC's own limit is
+      // a much more generous ~10 req/sec).
       let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withYoy>>()
-      const annualBySymbol = new Map<string, ReturnType<typeof annualHistoryFromReports>>()
+      const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
 
-      // 3 Finnhub calls per symbol, fired as one giant Promise.all, reliably triggered 429s on any
-      // day with more than ~20 reporters (429s came back as ordinary failed fetches, which the
-      // graceful-null handling in fhJson silently swallowed -- every row's enrichment went blank at
-      // once, not just the "overflow" ones). Batching keeps each burst small enough to actually
-      // succeed; it trades some page-load time for enrichment that reliably comes back non-empty.
-      const ENRICH_BATCH_SIZE = 15
+      const cikMap = await getTickerCikMap()
+
+      const ENRICH_BATCH_SIZE = 10
       const ENRICH_BATCH_DELAY_MS = 1000
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
-          const [fhProfile, quarterlyData, annualData] = await Promise.all([
+          const cik = cikMap.get(sym.toUpperCase())
+          const [fhProfile, facts] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
-            fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`),
-            fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=annual&token=${finnhubKey}`),
+            fetchSecFactsForSymbol(sym, cik),
           ])
 
           if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
 
-          const quarterlyReports = Array.isArray(quarterlyData?.data) ? quarterlyData.data : []
-          const annualReports = Array.isArray(annualData?.data) ? annualData.data : []
-          const discrete = withYoy(deriveDiscreteQuarters(quarterlyReports, annualReports)).slice(0, 8)
-          quartersBySymbol.set(sym, discrete)
-          annualBySymbol.set(sym, annualHistoryFromReports(annualReports).slice(0, 6))
+          if (facts) {
+            quartersBySymbol.set(sym, withYoy(buildQuartersFromFacts(facts)).slice(0, 8))
+            annualBySymbol.set(sym, annualWithYoy(buildAnnualFromFacts(facts)).slice(0, 6))
+          }
         }))
         if (i + ENRICH_BATCH_SIZE < symbols.length) {
           await new Promise(resolve => setTimeout(resolve, ENRICH_BATCH_DELAY_MS))
@@ -304,9 +411,9 @@ export async function POST(req: NextRequest) {
 
       earnings = earnings.map(e => {
         const quarters = quartersBySymbol.get(e.symbol) || []
-        // The exact quarter being reported today usually isn't in `quarters` yet (financials-reported
-        // lags the earnings announcement by several weeks until the 10-Q/10-K is formally filed), so
-        // find whichever derived quarter sits closest to a year before today's report date instead.
+        // The exact quarter being reported today usually isn't in `quarters` yet (the 10-Q/10-K lags
+        // the earnings announcement by several weeks), so find whichever quarter sits closest to a
+        // year before today's report date instead.
         const yoyMatch = findYoyMatch(e.date, quarters)
         const epsForGrowth = e.epsActual ?? e.epsEstimated
         const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
