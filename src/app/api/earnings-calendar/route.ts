@@ -52,6 +52,66 @@ function growthPct(current: number | null | undefined, prior: number | null | un
   return ((current - prior) / Math.abs(prior)) * 100
 }
 
+// Revenue isn't a single standardized XBRL tag -- it varies by industry (a REIT reports "net
+// interest income", a bank "noninterest income", a normal company "net sales"/"revenues"). This
+// tries the common tags in priority order and falls back through them; it won't be perfect for
+// every company, but covers the vast majority for free.
+const REVENUE_CONCEPTS = [
+  'us-gaap_Revenues',
+  'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax',
+  'us-gaap_RevenueFromContractWithCustomerIncludingAssessedTax',
+  'us-gaap_SalesRevenueNet',
+  'us-gaap_SalesRevenueGoodsNet',
+  'us-gaap_SalesRevenueServicesNet',
+  'us-gaap_InterestAndDividendIncomeOperating',
+  'us-gaap_InterestIncomeExpenseNet',
+  'us-gaap_NoninterestIncome',
+  'us-gaap_TotalRevenuesAndOtherIncome',
+]
+function extractConcept(ic: any[], concepts: string[]): number | null {
+  for (const concept of concepts) {
+    const item = ic.find((x: any) => x.concept === concept)
+    if (typeof item?.value === 'number') return item.value
+  }
+  return null
+}
+
+// Turn Finnhub's as-reported financials (`stock/financials-reported`) into {date, revenueActual}.
+// This is the richest free revenue history available: dozens of quarters per company, vs. none at
+// all from `stock/earnings` and 5 (when FMP isn't quota-exhausted) from FMP.
+//
+// EPS is deliberately NOT sourced from here: `financials-reported`'s EarningsPerShare concepts are
+// raw GAAP EPS straight from the 10-Q/10-K, which for companies with heavy one-time items (M&A
+// charges, impairments -- AbbVie is a good example) can differ wildly from the "actual" EPS that
+// earnings calendars and analyst estimates use (usually adjusted/non-GAAP EPS). Diffing GAAP history
+// against an adjusted current-quarter figure produced nonsense growth like +800% in testing. EPS
+// history stays on `stock/earnings`, which reports the same adjusted metric as the calendar itself.
+//
+// A second wrinkle: Finnhub's quarterly reports only cover Q1 as a clean 3-month period. Q2 and Q3
+// come back as year-to-date cumulative (e.g. "Q3" spans Jan 1 - Sep 30, 9 months, not just Jul-Sep),
+// and Q4 isn't in this feed at all (it's folded into the annual 10-K). Using the cumulative figures
+// as if they were single-quarter revenue produced numbers ~3x too high in testing. Rather than derive
+// discrete quarters via subtraction (needs the annual report too, for Q4), this keeps only reports
+// whose span is close to one quarter (~80-100 days) so what's shown is always correct, even though
+// it means real gaps for Q2/Q3/Q4 until FMP -- or a proper derivation -- fills them in.
+function revenueHistoryFromFinancialsReported(data: any): any[] {
+  const reports = Array.isArray(data?.data) ? data.data : []
+  return reports
+    .map((r: any) => {
+      const start = typeof r.startDate === 'string' ? new Date(r.startDate) : null
+      const end = typeof r.endDate === 'string' ? new Date(r.endDate) : null
+      if (!start || !end) return null
+      const spanDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+      if (spanDays < 80 || spanDays > 100) return null // cumulative (H1/9mo) report, not a discrete quarter
+      const ic = r.report?.ic || []
+      const revenueActual = extractConcept(ic, REVENUE_CONCEPTS)
+      const date = r.endDate.split(' ')[0]
+      if (revenueActual == null) return null
+      return { date, revenueActual }
+    })
+    .filter(Boolean)
+}
+
 // The calendar's `date` is the report/filing date; history entries are keyed by fiscal period-end
 // date, which is typically 20-60 days earlier. If a company just reported, its own quarter now
 // shows up in `hist` dated close to (but before) the report date -- comparing against the report
@@ -181,11 +241,12 @@ export async function POST(req: NextRequest) {
     )
 
     if (finnhubKey || fmpKey) {
-      // Market cap and EPS history/growth come from Finnhub (`profile2` + `stock/earnings`) --
-      // reliable and free, but Finnhub only returns 4 quarters of EPS history (no revenue at all),
-      // which covers QoQ growth and the last-4-quarters panel but isn't quite enough history for
-      // YoY. FMP's `earnings` endpoint (when its quota isn't exhausted) adds a 5th quarter back plus
-      // revenue, so it's kept as a supplementary source layered on top rather than the primary one.
+      // Market cap comes from Finnhub `profile2`. EPS history (for growth% and the last-4-quarters
+      // panel) comes from Finnhub `stock/earnings` -- only 4 quarters, but it's the *adjusted* EPS
+      // metric, consistent with what the calendar itself reports as "actual". Revenue history comes
+      // from `stock/financials-reported` (as-reported SEC filings, dozens of quarters) since revenue
+      // doesn't have the same GAAP-vs-adjusted divergence problem that ruled out using it for EPS.
+      // FMP's `earnings` is kept as a fallback layered underneath both.
       // Scoped to today's reporters only -- see MAX_ENRICH_LOOKUPS comment above.
       let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
@@ -193,9 +254,10 @@ export async function POST(req: NextRequest) {
       const capBySymbol = new Map<string, number>()
       const historyBySymbol = new Map<string, any[]>()
       await Promise.all(symbols.map(async (sym) => {
-        const [fhProfile, fhHist, fmpHist] = await Promise.all([
+        const [fhProfile, fhEps, fhFinancials, fmpHist] = await Promise.all([
           finnhubKey ? fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`) : Promise.resolve(null),
           finnhubKey ? fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`) : Promise.resolve(null),
+          finnhubKey ? fhJson(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`) : Promise.resolve(null),
           // This plan's FMP earnings-history endpoint caps `limit` at 5 -- a higher value fails outright.
           fmpKey ? fmpJson(`https://financialmodelingprep.com/stable/earnings?symbol=${sym}&limit=5&apikey=${fmpKey}`) : Promise.resolve(null),
         ])
@@ -203,17 +265,21 @@ export async function POST(req: NextRequest) {
         if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
 
         const byDate = new Map<string, any>()
-        if (Array.isArray(fhHist)) {
-          fhHist.forEach((h: any) => { if (h.period) byDate.set(h.period, { date: h.period, epsActual: h.actual, revenueActual: null }) })
+        if (Array.isArray(fhEps)) {
+          fhEps.forEach((h: any) => { if (h.period) byDate.set(h.period, { date: h.period, epsActual: h.actual, revenueActual: null }) })
         }
+        revenueHistoryFromFinancialsReported(fhFinancials).forEach((h: any) => {
+          const existing = byDate.get(h.date)
+          byDate.set(h.date, { date: h.date, epsActual: existing?.epsActual ?? null, revenueActual: h.revenueActual })
+        })
         if (Array.isArray(fmpHist)) {
           fmpHist.forEach((h: any) => {
             if (!h.date) return
             const existing = byDate.get(h.date)
             byDate.set(h.date, {
               date: h.date,
-              epsActual: h.epsActual ?? existing?.epsActual ?? null,
-              revenueActual: h.revenueActual ?? existing?.revenueActual ?? null,
+              epsActual: existing?.epsActual ?? h.epsActual ?? null,
+              revenueActual: existing?.revenueActual ?? h.revenueActual ?? null,
             })
           })
         }
