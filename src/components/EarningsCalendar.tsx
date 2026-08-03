@@ -45,6 +45,8 @@ export default function EarningsCalendar() {
   const [filter, setFilter] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [period, setPeriod] = useState<'today' | 'past' | 'future'>('today')
+  const [showPreMarket, setShowPreMarket] = useState(true)
+  const [showAfterHours, setShowAfterHours] = useState(true)
   const [historyView, setHistoryView] = useState<'quarterly' | 'annually'>('quarterly')
   const [growthMode, setGrowthMode] = useState<'yoy' | 'qoq'>('yoy')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -109,10 +111,19 @@ export default function EarningsCalendar() {
 
   const today = new Date().toISOString().split('T')[0]
 
+  function timeCategory(time: string): 'pre' | 'after' | 'other' {
+    if (!time) return 'other'
+    if (time === 'bmo' || time.toLowerCase().includes('before')) return 'pre'
+    if (time === 'amc' || time.toLowerCase().includes('after')) return 'after'
+    return 'other'
+  }
+
   const filtered = earnings.filter(e => {
     if (!(!filter || e.symbol?.toLowerCase().includes(filter.toLowerCase()))) return false
-    if (period === 'today') return e.date === today
-    return period === 'past' ? e.date < today : e.date > today
+    if (period === 'today') { if (e.date !== today) return false } else { if (!(period === 'past' ? e.date < today : e.date > today)) return false }
+    if (showPreMarket && showAfterHours) return true // nothing narrowed down -- show everything, including unclassified rows
+    const cat = timeCategory(e.time)
+    return (cat === 'pre' && showPreMarket) || (cat === 'after' && showAfterHours)
   })
 
   // Group by date
@@ -239,6 +250,19 @@ export default function EarningsCalendar() {
             <button onClick={() => setPeriod('past')} style={segStyle(period === 'past')}>Past 7 days</button>
             <button onClick={() => setPeriod('today')} style={segStyle(period === 'today')}>Today</button>
             <button onClick={() => setPeriod('future')} style={segStyle(period === 'future')}>Next 7 days</button>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>When</div>
+          <div style={{ display: 'flex', gap: 12, height: 36, alignItems: 'center', border: '1px solid #e5e5e3', borderRadius: 8, padding: '0 12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
+              <input type="checkbox" checked={showPreMarket} onChange={e => setShowPreMarket(e.target.checked)} />
+              Pre-market
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
+              <input type="checkbox" checked={showAfterHours} onChange={e => setShowAfterHours(e.target.checked)} />
+              After-hours
+            </label>
           </div>
         </div>
         <div>
