@@ -407,40 +407,53 @@ export async function POST(req: NextRequest) {
       fhEarnings = [...past, ...todayFh, ...future]
     }
 
-    // Finnhub still reports pre/after-market timing (FMP's stable calendar dropped that field), so merge it in by symbol.
+    // FMP and Finnhub don't always update an "actual" at the same speed once a company reports --
+    // previously this always preferred FMP's row whenever FMP listed the symbol at all, even if FMP's
+    // own copy was still showing an estimate while Finnhub already had the real actual. Now both
+    // sources are normalized and merged per symbol+date, picking whichever one actually has reported
+    // data if only one of them does (falling back to FMP for the tie-break when both or neither do,
+    // since FMP is otherwise the primary source here).
+    const rowKey = (symbol: string, date: string) => `${symbol}_${date}`
+    const fmpByKey = new Map<string, any>()
+    fmpEarnings.forEach((e: any) => {
+      fmpByKey.set(rowKey(e.symbol, e.date), {
+        symbol: e.symbol, date: e.date, time: '',
+        epsEstimated: e.epsEstimated, epsActual: e.epsActual,
+        revenueEstimated: e.revenueEstimated, revenueActual: e.revenueActual,
+      })
+    })
+    const fhByKey = new Map<string, any>()
+    fhEarnings.forEach((e: any) => {
+      fhByKey.set(rowKey(e.symbol, e.date), {
+        symbol: e.symbol, date: e.date, time: e.hour || '',
+        epsEstimated: e.epsEstimate, epsActual: e.epsActual,
+        revenueEstimated: e.revenueEstimate, revenueActual: e.revenueActual,
+      })
+    })
+    // Finnhub still reports pre/after-market timing (FMP's stable calendar dropped that field).
     const hourBySymbol = new Map<string, string>()
     fhEarnings.forEach((e: any) => {
       if (e.symbol && e.hour) hourBySymbol.set(e.symbol, e.hour)
     })
 
-    let earnings: any[]
-    if (fmpEarnings.length > 0) {
-      earnings = fmpEarnings.map((e: any) => ({
-        symbol: e.symbol,
-        date: e.date,
-        time: hourBySymbol.get(e.symbol) || '',
-        epsEstimated: e.epsEstimated,
-        epsActual: e.epsActual,
-        revenueEstimated: e.revenueEstimated,
-        revenueActual: e.revenueActual,
-      }))
-      const coveredSymbols = new Set(fmpEarnings.map((e: any) => e.symbol))
-      fhEarnings.forEach((e: any) => {
-        if (!coveredSymbols.has(e.symbol)) {
-          earnings.push({
-            symbol: e.symbol, date: e.date, time: e.hour || '',
-            epsEstimated: e.epsEstimate, epsActual: e.epsActual,
-            revenueEstimated: e.revenueEstimate, revenueActual: e.revenueActual,
-          })
-        }
-      })
-    } else {
-      earnings = fhEarnings.map((e: any) => ({
-        symbol: e.symbol, date: e.date, time: e.hour || '',
-        epsEstimated: e.epsEstimate, epsActual: e.epsActual,
-        revenueEstimated: e.revenueEstimate, revenueActual: e.revenueActual,
-      }))
-    }
+    const allKeys = new Set<string>()
+    fmpByKey.forEach((_, k) => allKeys.add(k))
+    fhByKey.forEach((_, k) => allKeys.add(k))
+    let earnings: any[] = []
+    allKeys.forEach((k) => {
+      const fmpRow = fmpByKey.get(k)
+      const fhRow = fhByKey.get(k)
+      let row: any
+      if (fmpRow && fhRow) {
+        const fmpHasActual = fmpRow.epsActual != null || fmpRow.revenueActual != null
+        const fhHasActual = fhRow.epsActual != null || fhRow.revenueActual != null
+        row = (!fmpHasActual && fhHasActual) ? fhRow : fmpRow
+      } else {
+        row = fmpRow || fhRow
+      }
+      if (!row.time) row.time = hourBySymbol.get(row.symbol) || ''
+      earnings.push(row)
+    })
 
     // Dedup symbol+date (past/future ranges can overlap slightly at the boundary)
     const seenKeys = new Set<string>()
