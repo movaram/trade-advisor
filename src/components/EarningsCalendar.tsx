@@ -92,7 +92,17 @@ export default function EarningsCalendar() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub, cachedEnrichment: cache })
       })
-      const data = await r.json()
+      const raw = await r.text()
+      let data: any
+      try {
+        data = JSON.parse(raw)
+      } catch {
+        // Platform-level errors (e.g. a function timeout) come back as an HTML/plain-text page, not
+        // JSON -- surface something actionable instead of a raw parse error.
+        throw new Error(r.status === 504 || !r.ok
+          ? 'Server took too long to respond (likely a temporary timeout) -- try Refresh again in a moment.'
+          : 'Unexpected server response.')
+      }
       if (data.error) throw new Error(data.error)
       const nextEarnings = data.earnings || []
       const nextCache = { ...cache }

@@ -38,12 +38,28 @@ function usEasternDateString(date: Date): string {
 // API calls, and that subset is small enough to stay safely under Finnhub's limit. A busy day's full
 // coverage completes gradually over a few auto-refresh cycles -- each one enriches the next batch of
 // still-uncached symbols -- rather than trying (and partially failing) to do everything in one shot.
-const MAX_ENRICH_LOOKUPS = 15
+const MAX_ENRICH_LOOKUPS = 10
 const MAX_RS_LOOKUPS = 3
+
+// A single slow upstream response (SEC companyfacts payloads run 1-3MB and occasionally stall) could
+// otherwise hold up an entire batch and push the whole request toward -- or past -- its time limit,
+// which comes back to the browser as a raw platform error page instead of JSON ("Unexpected token
+// 'A', 'An error o...'"). Capping each individual fetch means one slow symbol degrades gracefully
+// (that one field comes back null) instead of jeopardizing the whole response.
+const FETCH_TIMEOUT_MS = 8000
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function fhJson(url: string) {
   try {
-    const r = await fetch(url)
+    const r = await fetchWithTimeout(url)
     if (!r.ok) return null
     return await r.json()
   } catch { return null }
@@ -51,7 +67,7 @@ async function fhJson(url: string) {
 
 async function fmpJson(url: string) {
   try {
-    const r = await fetch(url)
+    const r = await fetchWithTimeout(url)
     if (!r.ok) return null
     return await r.json()
   } catch { return null }
@@ -105,7 +121,7 @@ const TICKER_CIK_TTL_MS = 24 * 60 * 60 * 1000
 async function getTickerCikMap(): Promise<Map<string, string>> {
   if (tickerCikCache && Date.now() - tickerCikCache.ts < TICKER_CIK_TTL_MS) return tickerCikCache.map
   try {
-    const r = await fetch('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': SEC_AGENT } })
+    const r = await fetchWithTimeout('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': SEC_AGENT } })
     if (!r.ok) return tickerCikCache?.map || new Map()
     const data = await r.json()
     const map = new Map<string, string>()
@@ -123,7 +139,7 @@ async function getTickerCikMap(): Promise<Map<string, string>> {
 
 async function fetchSecFacts(cik: string) {
   try {
-    const r = await fetch(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
+    const r = await fetchWithTimeout(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
     if (!r.ok) return null
     return await r.json()
   } catch { return null }
@@ -136,7 +152,7 @@ async function fetchSecFacts(cik: string) {
 // when the primary lookup comes back empty (keeps this to one extra SEC call for the rare mismatch).
 async function resolveCikViaBrowseEdgar(ticker: string): Promise<string | null> {
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${encodeURIComponent(ticker)}&type=10-K&dateb=&owner=include&count=1&output=atom`,
       { headers: { 'User-Agent': SEC_AGENT } }
     )
@@ -163,7 +179,7 @@ async function fetchSecFactsForSymbol(symbol: string, cik: string | undefined) {
 // "Industry" field; this is the broader "Sector" on top of it.
 async function fetchSecSector(cik: string): Promise<string | null> {
   try {
-    const r = await fetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
+    const r = await fetchWithTimeout(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
     if (!r.ok) return null
     const d = await r.json()
     return typeof d?.ownerOrg === 'string' ? d.ownerOrg.replace(/^\d+\s*/, '') : null
@@ -401,7 +417,7 @@ export async function POST(req: NextRequest) {
 
     const fhCalendar = async (from: string, to: string): Promise<any[]> => {
       try {
-        const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${finnhubKey}`)
+        const r = await fetchWithTimeout(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${finnhubKey}`)
         if (!r.ok) return []
         const d = await r.json()
         return Array.isArray(d.earningsCalendar) ? d.earningsCalendar : []
@@ -515,6 +531,13 @@ export async function POST(req: NextRequest) {
       const rsMonthBySymbol = new Map<string, number>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
       const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
+      // Finnhub's own stock/earnings sometimes has today's actual/estimate/surprise% before its
+      // calendar/earnings does (they appear to update on different schedules) -- backfills the
+      // calendar-sourced row below when the calendar itself hasn't caught up yet. Deliberately NOT
+      // cached: whether a company has reported is exactly the one thing that legitimately changes
+      // during the day, so it's worth rechecking on every fresh (uncached) enrichment pass rather than
+      // freezing a "hasn't reported yet" null for the rest of the day once the symbol gets cached.
+      const todaysFhReportBySymbol = new Map<string, { epsActual: number | null; epsEstimated: number | null }>()
 
       const cikMap = await getTickerCikMap()
 
@@ -571,6 +594,16 @@ export async function POST(req: NextRequest) {
           if (fhProfile?.finnhubIndustry) industryBySymbol.set(sym, fhProfile.finnhubIndustry)
           if (sector) sectorBySymbol.set(sym, sector)
 
+          if (Array.isArray(fhEarningsHistory)) {
+            const todaysReport = fhEarningsHistory.find((r: any) => r?.period === today)
+            if (todaysReport) {
+              todaysFhReportBySymbol.set(sym, {
+                epsActual: num(todaysReport.actual),
+                epsEstimated: num(todaysReport.estimate),
+              })
+            }
+          }
+
           if (wantsRs) {
             // "Latest price" here is Finnhub's quote `c` -- during market hours it's the live price,
             // but for most of when this dashboard actually gets checked (pre-market, after-hours,
@@ -601,12 +634,19 @@ export async function POST(req: NextRequest) {
       }
 
       earnings = earnings.map(e => {
+        // Finnhub's stock/earnings sometimes has today's actual/estimate before its own calendar
+        // endpoint does -- backfill from it so EPS Surprise % (computed client-side from these two
+        // fields) doesn't sit blank just because the calendar specifically hasn't caught up yet.
+        const fhTodayReport = todaysFhReportBySymbol.get(e.symbol)
+        const epsActual = e.epsActual ?? fhTodayReport?.epsActual ?? null
+        const epsEstimated = e.epsEstimated ?? fhTodayReport?.epsEstimated ?? null
+
         const quarters = quartersBySymbol.get(e.symbol) || []
         // The exact quarter being reported today usually isn't in `quarters` yet (the 10-Q/10-K lags
         // the earnings announcement by several weeks), so find whichever quarter sits closest to a
         // year before today's report date instead.
         const yoyMatch = findYoyMatch(e.date, quarters)
-        const epsForGrowth = e.epsActual ?? e.epsEstimated
+        const epsForGrowth = epsActual ?? epsEstimated
         const revenueForGrowth = e.revenueActual ?? e.revenueEstimated
         let epsGrowthPctYoy = yoyMatch ? growthPct(epsForGrowth, yoyMatch.eps) : null
         const revenueGrowthPctYoy = yoyMatch ? growthPct(revenueForGrowth, yoyMatch.revenue) : null
@@ -618,6 +658,8 @@ export async function POST(req: NextRequest) {
         if (epsGrowthPctYoy != null && Math.abs(epsGrowthPctYoy) > 300) epsGrowthPctYoy = null
         return {
           ...e,
+          epsActual,
+          epsEstimated,
           marketCap: capBySymbol.get(e.symbol) ?? null,
           industry: industryBySymbol.get(e.symbol) ?? null,
           sector: sectorBySymbol.get(e.symbol) ?? null,
