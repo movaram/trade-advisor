@@ -6,10 +6,12 @@ export const maxDuration = 60
 
 const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 
-// Enrichment now costs 2 Finnhub calls (market cap, historical EPS surprise%) + 1 SEC call
-// (EPS/Sales history) per symbol, batched to stay polite to both providers -- Finnhub's 60/min limit
-// and SEC's ~10 req/sec fair-use guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10
-// that's ~5s of added delay plus fetch time, well inside the 60s ceiling set above.
+// Enrichment costs 2 Finnhub calls (market cap, historical EPS surprise%) + 1 SEC call (EPS/Sales
+// history) per symbol that isn't already in the client's cache (see CLIENT_CACHE_TTL_MS below) --
+// batched to stay polite to both providers, Finnhub's 60/min limit and SEC's ~10 req/sec fair-use
+// guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10 that's ~5s of added delay
+// plus fetch time, well inside the 60s ceiling set above. Only the first load of the day actually
+// pays this cost for a given symbol; every refresh after that serves cached symbols for free.
 const MAX_ENRICH_LOOKUPS = 60
 
 async function fhJson(url: string) {
@@ -294,9 +296,19 @@ function findYoyMatch(reportDate: string, quarters: { date: string | null }[]) {
   return bestDiff <= 60 ? best : null
 }
 
+// Market cap, SEC quarterly/annual history, and historical EPS surprise% don't meaningfully change
+// within a trading day -- the only thing that actually changes intraday is whether a symbol's
+// epsActual/revenueActual has posted yet, which comes from the (cheap, non-per-symbol) calendar
+// calls above. The client sends back whatever enrichment it already has cached; anything still
+// within this TTL is reused as-is instead of re-hitting Finnhub/SEC, so repeat auto-refreshes only
+// pay the per-symbol cost once per day instead of on every refresh.
+const CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+
 export async function POST(req: NextRequest) {
   try {
-    const { fmpKey, finnhubKey } = await req.json()
+    const { fmpKey, finnhubKey, cachedEnrichment } = await req.json()
+    const cache: Record<string, { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
+      cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
     const today = new Date().toISOString().split('T')[0]
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -408,6 +420,15 @@ export async function POST(req: NextRequest) {
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
+          const cached = cache[sym]
+          const cacheIsFresh = cached?.cachedAt != null && Date.now() - cached.cachedAt < CLIENT_CACHE_TTL_MS
+          if (cacheIsFresh) {
+            if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
+            if (cached!.quarterlyHistory) quartersBySymbol.set(sym, cached!.quarterlyHistory as any)
+            if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
+            return // already have this for today -- skip Finnhub/SEC entirely
+          }
+
           const cik = cikMap.get(sym.toUpperCase())
           const [fhProfile, facts, fhEarningsHistory] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),

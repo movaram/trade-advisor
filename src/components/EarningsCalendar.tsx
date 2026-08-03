@@ -2,10 +2,40 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useKeys } from '@/lib/keys'
 
+// Market cap, SEC quarterly/annual history, and historical EPS surprise% barely change within a
+// trading day -- once fetched for a symbol there's no need to ask Finnhub/SEC for it again until
+// tomorrow. This cache is what lets auto-refresh poll often without re-spending the per-symbol API
+// budget on every tick (see route.ts CLIENT_CACHE_TTL_MS for the matching server-side check).
+const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
+const ENRICHMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const AUTO_REFRESH_MS = 60 * 1000
+
+type CachedEnrichment = { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number }
+
+function loadEnrichmentCache(): Record<string, CachedEnrichment> {
+  try {
+    const raw = localStorage.getItem(ENRICHMENT_CACHE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    const now = Date.now()
+    const pruned: Record<string, CachedEnrichment> = {}
+    Object.keys(parsed).forEach(sym => {
+      if (parsed[sym]?.cachedAt != null && now - parsed[sym].cachedAt < ENRICHMENT_CACHE_TTL_MS) pruned[sym] = parsed[sym]
+    })
+    return pruned
+  } catch { return {} }
+}
+
+function saveEnrichmentCache(cache: Record<string, CachedEnrichment>) {
+  try { localStorage.setItem(ENRICHMENT_CACHE_KEY, JSON.stringify(cache)) } catch {}
+}
+
 export default function EarningsCalendar() {
   const { keys } = useKeys()
   const [earnings, setEarnings] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -21,25 +51,48 @@ export default function EarningsCalendar() {
     }
   }, [keys.finnhub, keys.fmp])
 
-  async function load() {
+  // Auto-refresh only re-checks the calendar (cheap, not per-symbol) -- symbols already cached from
+  // an earlier load this session skip Finnhub/SEC entirely, so polling every minute stays well within
+  // both providers' limits. Paused while the tab is hidden so a forgotten background tab doesn't spend
+  // API calls for nothing.
+  useEffect(() => {
+    if (!keys.finnhub && !keys.fmp) return
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') load({ silent: true })
+    }, AUTO_REFRESH_MS)
+    return () => clearInterval(id)
+  }, [keys.finnhub, keys.fmp])
+
+  async function load(opts?: { silent?: boolean }) {
     if (!keys.finnhub && !keys.fmp) {
       setError('Please save your API keys first.')
       return
     }
-    setLoading(true); setError('')
+    if (opts?.silent) setRefreshing(true); else setLoading(true)
+    setError('')
     try {
+      const cache = loadEnrichmentCache()
       const r = await fetch('/api/earnings-calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub })
+        body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub, cachedEnrichment: cache })
       })
       const data = await r.json()
       if (data.error) throw new Error(data.error)
-      setEarnings(data.earnings || [])
+      const nextEarnings = data.earnings || []
+      const nextCache = { ...cache }
+      nextEarnings.forEach((e: any) => {
+        if (e.marketCap != null || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
+          nextCache[e.symbol] = { marketCap: e.marketCap, quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now() }
+        }
+      })
+      saveEnrichmentCache(nextCache)
+      setEarnings(nextEarnings)
+      setLastUpdated(Date.now())
     } catch (e: any) {
       setError('Error loading earnings: ' + e.message)
     }
-    setLoading(false)
+    if (opts?.silent) setRefreshing(false); else setLoading(false)
   }
 
   const today = new Date().toISOString().split('T')[0]
@@ -159,14 +212,21 @@ export default function EarningsCalendar() {
             placeholder="Filter by ticker..."
             style={{ maxWidth: 240, fontSize: 14, height: 36, width: '100%' }} />
         </div>
-        <button onClick={load} disabled={loading}
-          style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
-          {loading ? 'Loading...' : 'Refresh ↻'}
-        </button>
+        <div>
+          <button onClick={() => load()} disabled={loading}
+            style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
+            {loading ? 'Loading...' : 'Refresh ↻'}
+          </button>
+          {lastUpdated != null && (
+            <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 4, textAlign: 'center' }}>
+              {refreshing ? 'updating…' : `updated ${new Date(lastUpdated).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={{ fontSize: 13, color: '#6b6b68', marginBottom: '1rem' }}>
-        {filtered.length} companies · growth always vs. same quarter last year (O'Neil/Bonde style){period === 'today' ? ' · market cap and 8-quarter history available (click a row)' : ' · full history available on the Today tab to stay within API limits'}
+        {filtered.length} companies · growth always vs. same quarter last year (O'Neil/Bonde style){period === 'today' ? ' · market cap and 8-quarter history available (click a row)' : ' · full history available on the Today tab to stay within API limits'} · auto-refreshes every minute
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>{error}</div>}
