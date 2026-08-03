@@ -6,10 +6,10 @@ export const maxDuration = 60
 
 const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 
-// Enrichment now costs 1 Finnhub call (market cap) + 1 SEC call (EPS/Sales history) per symbol,
-// batched to stay polite to both providers -- Finnhub's 60/min limit and SEC's ~10 req/sec fair-use
-// guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10 that's ~5s of added delay
-// plus fetch time, well inside the 60s ceiling set above.
+// Enrichment now costs 2 Finnhub calls (market cap, historical EPS surprise%) + 1 SEC call
+// (EPS/Sales history) per symbol, batched to stay polite to both providers -- Finnhub's 60/min limit
+// and SEC's ~10 req/sec fair-use guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10
+// that's ~5s of added delay plus fetch time, well inside the 60s ceiling set above.
 const MAX_ENRICH_LOOKUPS = 60
 
 async function fhJson(url: string) {
@@ -225,22 +225,39 @@ function buildAnnualFromFacts(facts: any) {
 }
 
 // William O'Neil (CANSLIM) / Pradeep Bonde (Stockbee)-style table: each quarter's EPS and Sales
-// compared to the *same fiscal quarter one year earlier* (never sequential QoQ, since most
-// businesses are seasonal). Matched via SEC's own fy/fp tags rather than calendar-quarter math, so
-// it's correct even for companies with non-calendar fiscal years.
-function withYoy(discrete: ReturnType<typeof buildQuartersFromFacts>) {
-  return discrete.map((q) => {
-    const prior = discrete.find((x) => x.year === q.year - 1 && x.quarter === q.quarter)
+// compared to the *same fiscal quarter one year earlier* (the primary view -- most businesses are
+// seasonal, so sequential QoQ is noisy). QoQ is also computed and kept as a separate field so the UI
+// can offer it as an alternate view without blending the two into one ambiguous %. Matched via SEC's
+// own fy/fp tags rather than calendar-quarter math, so it's correct even for non-calendar fiscal years.
+function withGrowth(discrete: ReturnType<typeof buildQuartersFromFacts>) {
+  return discrete.map((q, i) => {
+    const priorYoy = discrete.find((x) => x.year === q.year - 1 && x.quarter === q.quarter)
+    const priorQoq = discrete[i + 1] // next entry in date-desc order = immediately preceding quarter
     return {
       date: q.date,
       year: q.year,
       quarter: q.quarter,
       eps: q.eps,
       revenue: q.revenue,
-      epsYoyPct: prior ? growthPct(q.eps, prior.eps) : null,
-      revenueYoyPct: prior ? growthPct(q.revenue, prior.revenue) : null,
+      epsYoyPct: priorYoy ? growthPct(q.eps, priorYoy.eps) : null,
+      revenueYoyPct: priorYoy ? growthPct(q.revenue, priorYoy.revenue) : null,
+      epsQoqPct: priorQoq ? growthPct(q.eps, priorQoq.eps) : null,
+      revenueQoqPct: priorQoq ? growthPct(q.revenue, priorQoq.revenue) : null,
+      epsSurprisePct: null as number | null, // filled in from Finnhub stock/earnings where available
     }
   })
+}
+
+// Finnhub's stock/earnings gives actual/estimate/surprisePercent directly, but free tier hard-caps
+// this at the last ~4 quarters regardless of params -- so most of the 8-quarter table won't have it.
+// No free source (SEC included) carries historical *revenue* estimates, so there's no revenue-surprise
+// equivalent for the history table; today's own report still gets both from the calendar endpoints.
+function attachEpsSurprise(quarters: ReturnType<typeof withGrowth>, finnhubEarnings: any[]) {
+  const byPeriod = new Map<string, number>()
+  finnhubEarnings.forEach((r: any) => {
+    if (r?.period && typeof r.surprisePercent === 'number') byPeriod.set(r.period, r.surprisePercent)
+  })
+  return quarters.map((q) => ({ ...q, epsSurprisePct: q.date ? byPeriod.get(q.date) ?? null : null }))
 }
 
 function annualWithYoy(years: ReturnType<typeof buildAnnualFromFacts>) {
@@ -381,7 +398,7 @@ export async function POST(req: NextRequest) {
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
-      const quartersBySymbol = new Map<string, ReturnType<typeof withYoy>>()
+      const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
       const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
 
       const cikMap = await getTickerCikMap()
@@ -392,15 +409,20 @@ export async function POST(req: NextRequest) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
           const cik = cikMap.get(sym.toUpperCase())
-          const [fhProfile, facts] = await Promise.all([
+          const [fhProfile, facts, fhEarningsHistory] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
             fetchSecFactsForSymbol(sym, cik),
+            fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`),
           ])
 
           if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
 
           if (facts) {
-            quartersBySymbol.set(sym, withYoy(buildQuartersFromFacts(facts)).slice(0, 8))
+            const quarters = attachEpsSurprise(
+              withGrowth(buildQuartersFromFacts(facts)).slice(0, 8),
+              Array.isArray(fhEarningsHistory) ? fhEarningsHistory : []
+            )
+            quartersBySymbol.set(sym, quarters)
             annualBySymbol.set(sym, annualWithYoy(buildAnnualFromFacts(facts)).slice(0, 6))
           }
         }))
