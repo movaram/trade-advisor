@@ -2,62 +2,17 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useKeys } from '@/lib/keys'
 
-// Market cap, SEC quarterly/annual history, and historical EPS surprise% barely change within a
-// trading day -- once fetched for a symbol there's no need to ask Finnhub/SEC for it again until
-// tomorrow. This cache is what lets auto-refresh poll often without re-spending the per-symbol API
-// budget on every tick (see route.ts CLIENT_CACHE_TTL_MS for the matching server-side check).
-const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
-const ENRICHMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
-const AUTO_REFRESH_MS = 60 * 1000
-
-// US earnings calendars run on US Eastern Time regardless of where the browser's clock is set --
-// matches the same helper on the server (route.ts) so "today" means the same date on both sides.
-function usEasternDateString(date: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
-}
-
-type CachedEnrichment = {
-  marketCap?: number | null; industry?: string | null; sector?: string | null;
-  pctFromWeek52High?: number | null; pctFromWeek52Low?: number | null;
-  rsWeekPct?: number | null; rsMonthPct?: number | null;
-  quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number
-}
-
-function loadEnrichmentCache(): Record<string, CachedEnrichment> {
-  try {
-    const raw = localStorage.getItem(ENRICHMENT_CACHE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    const now = Date.now()
-    const pruned: Record<string, CachedEnrichment> = {}
-    Object.keys(parsed).forEach(sym => {
-      if (parsed[sym]?.cachedAt != null && now - parsed[sym].cachedAt < ENRICHMENT_CACHE_TTL_MS) pruned[sym] = parsed[sym]
-    })
-    return pruned
-  } catch { return {} }
-}
-
-function saveEnrichmentCache(cache: Record<string, CachedEnrichment>) {
-  try { localStorage.setItem(ENRICHMENT_CACHE_KEY, JSON.stringify(cache)) } catch {}
-}
-
 export default function EarningsCalendar() {
   const { keys } = useKeys()
   const [earnings, setEarnings] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [period, setPeriod] = useState<'today' | 'past' | 'future'>('today')
-  const [showPreMarket, setShowPreMarket] = useState(true)
-  const [showAfterHours, setShowAfterHours] = useState(true)
   const [historyView, setHistoryView] = useState<'quarterly' | 'annually'>('quarterly')
   const [growthMode, setGrowthMode] = useState<'yoy' | 'qoq'>('yoy')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [sortCol, setSortCol] = useState<string | null>(null)
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   useEffect(() => {
     if ((keys.finnhub || keys.fmp) && !loaded) {
@@ -66,80 +21,33 @@ export default function EarningsCalendar() {
     }
   }, [keys.finnhub, keys.fmp])
 
-  // Auto-refresh only re-checks the calendar (cheap, not per-symbol) -- symbols already cached from
-  // an earlier load this session skip Finnhub/SEC entirely, so polling every minute stays well within
-  // both providers' limits. Paused while the tab is hidden so a forgotten background tab doesn't spend
-  // API calls for nothing.
-  useEffect(() => {
-    if (!keys.finnhub && !keys.fmp) return
-    const id = setInterval(() => {
-      if (document.visibilityState === 'visible') load({ silent: true })
-    }, AUTO_REFRESH_MS)
-    return () => clearInterval(id)
-  }, [keys.finnhub, keys.fmp])
-
-  async function load(opts?: { silent?: boolean }) {
+  async function load() {
     if (!keys.finnhub && !keys.fmp) {
       setError('Please save your API keys first.')
       return
     }
-    if (opts?.silent) setRefreshing(true); else setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
-      const cache = loadEnrichmentCache()
       const r = await fetch('/api/earnings-calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub, cachedEnrichment: cache })
+        body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub })
       })
-      const raw = await r.text()
-      let data: any
-      try {
-        data = JSON.parse(raw)
-      } catch {
-        // Platform-level errors (e.g. a function timeout) come back as an HTML/plain-text page, not
-        // JSON -- surface something actionable instead of a raw parse error.
-        throw new Error(r.status === 504 || !r.ok
-          ? 'Server took too long to respond (likely a temporary timeout) -- try Refresh again in a moment.'
-          : 'Unexpected server response.')
-      }
+      const data = await r.json()
       if (data.error) throw new Error(data.error)
-      const nextEarnings = data.earnings || []
-      const nextCache = { ...cache }
-      nextEarnings.forEach((e: any) => {
-        if (e.marketCap != null || e.industry || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
-          nextCache[e.symbol] = {
-            marketCap: e.marketCap, industry: e.industry, sector: e.sector,
-            pctFromWeek52High: e.pctFromWeek52High, pctFromWeek52Low: e.pctFromWeek52Low,
-            rsWeekPct: e.rsWeekPct, rsMonthPct: e.rsMonthPct,
-            quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now()
-          }
-        }
-      })
-      saveEnrichmentCache(nextCache)
-      setEarnings(nextEarnings)
-      setLastUpdated(Date.now())
+      setEarnings(data.earnings || [])
     } catch (e: any) {
       setError('Error loading earnings: ' + e.message)
     }
-    if (opts?.silent) setRefreshing(false); else setLoading(false)
+    setLoading(false)
   }
 
-  const today = usEasternDateString(new Date())
-
-  function timeCategory(time: string): 'pre' | 'after' | 'other' {
-    if (!time) return 'other'
-    if (time === 'bmo' || time.toLowerCase().includes('before')) return 'pre'
-    if (time === 'amc' || time.toLowerCase().includes('after')) return 'after'
-    return 'other'
-  }
+  const today = new Date().toISOString().split('T')[0]
 
   const filtered = earnings.filter(e => {
     if (!(!filter || e.symbol?.toLowerCase().includes(filter.toLowerCase()))) return false
-    if (period === 'today') { if (e.date !== today) return false } else { if (!(period === 'past' ? e.date < today : e.date > today)) return false }
-    if (showPreMarket && showAfterHours) return true // nothing narrowed down -- show everything, including unclassified rows
-    const cat = timeCategory(e.time)
-    return (cat === 'pre' && showPreMarket) || (cat === 'after' && showAfterHours)
+    if (period === 'today') return e.date === today
+    return period === 'past' ? e.date < today : e.date > today
   })
 
   // Group by date
@@ -172,7 +80,7 @@ export default function EarningsCalendar() {
   }
 
   function isTomorrow(d: string) {
-    const tom = usEasternDateString(new Date(Date.now() + 24 * 60 * 60 * 1000))
+    const tom = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     return d === tom
   }
 
@@ -213,45 +121,6 @@ export default function EarningsCalendar() {
     })
   }
 
-  function getSortValue(e: any, col: string): number | string | null {
-    switch (col) {
-      case 'ticker': return e.symbol || ''
-      case 'marketCap': return e.marketCap
-      case 'eps': return e.epsActual ?? e.epsEstimated
-      case 'epsGrowth': return e.epsGrowthPctYoy
-      case 'revenue': return e.revenueActual ?? e.revenueEstimated
-      case 'revenueGrowth': return e.revenueGrowthPctYoy
-      case 'epsSurprise': {
-        const reported = e.epsActual != null
-        return reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
-      }
-      case 'revenueSurprise': {
-        const reported = e.epsActual != null
-        return reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
-      }
-      default: return null
-    }
-  }
-
-  function toggleSort(col: string) {
-    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-    else { setSortCol(col); setSortDir('desc') }
-  }
-
-  function sortRows(rows: any[]): any[] {
-    if (!sortCol) return rows
-    const dir = sortDir === 'asc' ? 1 : -1
-    return [...rows].sort((a, b) => {
-      const va = getSortValue(a, sortCol)
-      const vb = getSortValue(b, sortCol)
-      if (va == null && vb == null) return 0
-      if (va == null) return 1 // nulls always sort last, regardless of direction
-      if (vb == null) return -1
-      if (typeof va === 'string' || typeof vb === 'string') return String(va).localeCompare(String(vb)) * dir
-      return (Number(va) - Number(vb)) * dir
-    })
-  }
-
   const segStyle = (active: boolean): React.CSSProperties => ({
     padding: '0 14px', height: 36, fontSize: 13, border: 'none', cursor: 'pointer',
     background: active ? '#1a1a18' : '#fff', color: active ? '#fff' : '#6b6b68', fontWeight: active ? 600 : 400
@@ -266,19 +135,6 @@ export default function EarningsCalendar() {
             <button onClick={() => setPeriod('past')} style={segStyle(period === 'past')}>Past 7 days</button>
             <button onClick={() => setPeriod('today')} style={segStyle(period === 'today')}>Today</button>
             <button onClick={() => setPeriod('future')} style={segStyle(period === 'future')}>Next 7 days</button>
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>When</div>
-          <div style={{ display: 'flex', gap: 12, height: 36, alignItems: 'center', border: '1px solid #e5e5e3', borderRadius: 8, padding: '0 12px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
-              <input type="checkbox" checked={showPreMarket} onChange={e => setShowPreMarket(e.target.checked)} />
-              Pre-market
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
-              <input type="checkbox" checked={showAfterHours} onChange={e => setShowAfterHours(e.target.checked)} />
-              After-hours
-            </label>
           </div>
         </div>
         <div>
@@ -303,21 +159,14 @@ export default function EarningsCalendar() {
             placeholder="Filter by ticker..."
             style={{ maxWidth: 240, fontSize: 14, height: 36, width: '100%' }} />
         </div>
-        <div>
-          <button onClick={() => load()} disabled={loading}
-            style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
-            {loading ? 'Loading...' : 'Refresh ↻'}
-          </button>
-          {lastUpdated != null && (
-            <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 4, textAlign: 'center' }}>
-              {refreshing ? 'updating…' : `updated ${new Date(lastUpdated).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
-            </div>
-          )}
-        </div>
+        <button onClick={load} disabled={loading}
+          style={{ background: '#1a1a18', color: '#fff', padding: '0 16px', height: 36, fontSize: 13, borderRadius: 8, border: 'none', cursor: 'pointer' }}>
+          {loading ? 'Loading...' : 'Refresh ↻'}
+        </button>
       </div>
 
       <div style={{ fontSize: 13, color: '#6b6b68', marginBottom: '1rem' }}>
-        {filtered.length} companies · growth always vs. same quarter last year (O'Neil/Bonde style){period === 'today' ? ' · market cap and 8-quarter history available (click a row)' : ' · full history available on the Today tab to stay within API limits'} · auto-refreshes every minute
+        {filtered.length} companies · growth always vs. same quarter last year (O'Neil/Bonde style){period === 'today' ? ' · market cap and 8-quarter history available (click a row)' : ' · full history available on the Today tab to stay within API limits'}
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: '1rem' }}>{error}</div>}
@@ -348,26 +197,13 @@ export default function EarningsCalendar() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                    {[
-                      { label: 'Ticker', key: 'ticker' },
-                      { label: 'Mkt Cap', key: 'marketCap' },
-                      { label: 'When' },
-                      { label: 'EPS', key: 'eps' },
-                      { label: 'EPS Growth (YoY)', key: 'epsGrowth' },
-                      { label: 'Revenue', key: 'revenue' },
-                      { label: 'Rev Growth (YoY)', key: 'revenueGrowth' },
-                      { label: 'EPS Surprise %', key: 'epsSurprise' },
-                      { label: 'Rev Surprise %', key: 'revenueSurprise' },
-                    ].map(h => (
-                      <th key={h.label} onClick={() => h.key && toggleSort(h.key)}
-                        style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap', cursor: h.key ? 'pointer' : 'default', userSelect: 'none' }}>
-                        {h.label}{h.key && sortCol === h.key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
-                      </th>
+                    {['Ticker', 'Mkt Cap', 'When', 'EPS', 'EPS Growth (YoY)', 'Revenue', 'Rev Growth (YoY)', 'EPS Surprise %', 'Rev Surprise %'].map(h => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {sortRows(byDate[date]).map((e: any, i: number) => {
+                  {byDate[date].map((e: any, i: number) => {
                     const key = `${e.symbol}_${e.date}`
                     const tl = timeLabel(e.time)
                     const reported = e.epsActual != null
@@ -402,19 +238,9 @@ export default function EarningsCalendar() {
                         </tr>
                         {isOpen && hasAnyHistory && (
                           <tr style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
-                            <td colSpan={9} style={{ padding: '0 32px 12px 32px', background: '#f8f8f7' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', margin: '8px 0 6px', gap: 16, flexWrap: 'wrap' }}>
-                                <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                  {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: '#6b6b68', alignItems: 'flex-end' }}>
-                                  {e.sector && <div>Sector: <b style={{ color: '#1a1a18' }}>{e.sector}</b></div>}
-                                  {e.industry && <div>Industry: <b style={{ color: '#1a1a18' }}>{e.industry}</b></div>}
-                                  {e.rsWeekPct != null && <div>RS 1W vs SPY: <b style={{ color: pctColor(e.rsWeekPct) }}>{fmtPct(e.rsWeekPct)}</b></div>}
-                                  {e.rsMonthPct != null && <div>RS 1M vs SPY: <b style={{ color: pctColor(e.rsMonthPct) }}>{fmtPct(e.rsMonthPct)}</b></div>}
-                                  {e.pctFromWeek52High != null && <div>vs 52W High: <b style={{ color: pctColor(e.pctFromWeek52High) }}>{fmtPct(e.pctFromWeek52High)}</b></div>}
-                                  {e.pctFromWeek52Low != null && <div>vs 52W Low: <b style={{ color: pctColor(e.pctFromWeek52Low) }}>{fmtPct(e.pctFromWeek52Low)}</b></div>}
-                                </div>
+                            <td colSpan={9} style={{ padding: '0 12px 12px 32px', background: '#f8f8f7' }}>
+                              <div style={{ fontSize: 11, color: '#9b9b98', margin: '8px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
                               </div>
                               {hasHistory ? (
                                 <>
@@ -446,7 +272,6 @@ export default function EarningsCalendar() {
                                   <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 6 }}>
                                     EPS is as-reported (GAAP) — can look choppy for companies with one-time charges (M&amp;A, impairments), which is normal.
                                     {historyView === 'quarterly' && ' EPS Surprise % is only available for the last ~4 quarters (Finnhub free tier limit); revenue surprise has no free historical source, so it isn’t shown here — only on today’s own report above.'}
-                                    {' RS and vs 52W High/Low use the latest daily close (not live intraday price); only shown for the first 10 today\'s-reporters per load to stay within Finnhub\'s free-tier rate limit.'}
                                   </div>
                                 </>
                               ) : (
