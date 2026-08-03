@@ -12,6 +12,21 @@ const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 // that's ~5s of added delay plus fetch time, well inside the 60s ceiling set above.
 const MAX_ENRICH_LOOKUPS = 60
 
+// Market cap and SEC quarterly/annual history don't meaningfully change within a week -- the client
+// sends back whatever it already has cached, and anything still within this window is reused as-is
+// instead of re-hitting Finnhub/SEC. Requiring marketCap != null (below, where this is checked) is
+// what actually matters for correctness: a symbol whose enrichment failed or got rate-limited must
+// NOT be treated as "done" just because an entry with a recent timestamp exists, or it would stay
+// silently blank for the rest of the window instead of retrying on the next request.
+const CLIENT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function timeCategory(time: string): 'pre' | 'after' | 'other' {
+  if (!time) return 'other'
+  if (time === 'bmo' || time.toLowerCase().includes('before')) return 'pre'
+  if (time === 'amc' || time.toLowerCase().includes('after')) return 'after'
+  return 'other'
+}
+
 async function fhJson(url: string) {
   try {
     const r = await fetch(url)
@@ -296,7 +311,11 @@ function findYoyMatch(reportDate: string, quarters: { date: string | null }[]) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { fmpKey, finnhubKey } = await req.json()
+    const { fmpKey, finnhubKey, cachedEnrichment, whenFilter } = await req.json()
+    const cache: Record<string, { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
+      cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
+    const wf: { pre: boolean; after: boolean } =
+      whenFilter && typeof whenFilter === 'object' ? whenFilter : { pre: true, after: true }
     const today = new Date().toISOString().split('T')[0]
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -394,8 +413,25 @@ export async function POST(req: NextRequest) {
       // discrete and cumulative figures as separate facts, so no derive-by-subtraction is needed, it
       // goes back many more years, and it's off Finnhub's 60/min budget entirely (SEC's own limit is
       // a much more generous ~10 req/sec).
-      let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
-      symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
+      // Only enrich symbols that will actually be visible under the current Pre-market/After-hours
+      // selection -- if the user has narrowed to just one, there's no reason to spend API calls on
+      // rows that are hidden anyway. Both checked (the default) means no narrowing at all.
+      const todayRows = earnings.filter(e => e.date === today)
+      const visibleTodayRows = (wf.pre && wf.after)
+        ? todayRows
+        : todayRows.filter(e => {
+            const cat = timeCategory(e.time)
+            return (cat === 'pre' && wf.pre) || (cat === 'after' && wf.after)
+          })
+      let symbols = Array.from(new Set(visibleTodayRows.map(e => e.symbol).filter(Boolean)))
+
+      const isCacheFresh = (sym: string) => {
+        const c = cache[sym]
+        return c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS && c.marketCap != null
+      }
+      // Not-yet-cached symbols go first so a slow/rate-limited day doesn't let the same already-cached
+      // (free) symbols crowd out ones that still actually need a real fetch, within the fixed cap.
+      symbols = symbols.filter(s => !isCacheFresh(s)).concat(symbols.filter(isCacheFresh)).slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
@@ -408,6 +444,14 @@ export async function POST(req: NextRequest) {
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
+          const cached = cache[sym]
+          if (isCacheFresh(sym)) {
+            if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
+            if (cached!.quarterlyHistory) quartersBySymbol.set(sym, cached!.quarterlyHistory as any)
+            if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
+            return // already have this, still within the cache window -- skip Finnhub/SEC entirely
+          }
+
           const cik = cikMap.get(sym.toUpperCase())
           const [fhProfile, facts, fhEarningsHistory] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),

@@ -2,6 +2,35 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useKeys } from '@/lib/keys'
 
+// Market cap and SEC quarterly/annual history barely change within a week -- once fetched for a
+// symbol there's no need to ask Finnhub/SEC for it again for a while. Entries older than the TTL are
+// dropped whenever the cache is read, so this never grows unbounded. The matching server-side check
+// (route.ts CLIENT_CACHE_TTL_MS) also requires marketCap != null before trusting an entry as "done" --
+// age alone isn't enough, or a symbol that failed/got rate-limited would stay silently blank for the
+// whole window instead of retrying on the next request.
+const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
+const ENRICHMENT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+type CachedEnrichment = { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number }
+
+function loadEnrichmentCache(): Record<string, CachedEnrichment> {
+  try {
+    const raw = localStorage.getItem(ENRICHMENT_CACHE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    const now = Date.now()
+    const pruned: Record<string, CachedEnrichment> = {}
+    Object.keys(parsed).forEach(sym => {
+      if (parsed[sym]?.cachedAt != null && now - parsed[sym].cachedAt < ENRICHMENT_CACHE_TTL_MS) pruned[sym] = parsed[sym]
+    })
+    return pruned
+  } catch { return {} }
+}
+
+function saveEnrichmentCache(cache: Record<string, CachedEnrichment>) {
+  try { localStorage.setItem(ENRICHMENT_CACHE_KEY, JSON.stringify(cache)) } catch {}
+}
+
 export default function EarningsCalendar() {
   const { keys } = useKeys()
   const [earnings, setEarnings] = useState<any[]>([])
@@ -13,6 +42,8 @@ export default function EarningsCalendar() {
   const [historyView, setHistoryView] = useState<'quarterly' | 'annually'>('quarterly')
   const [growthMode, setGrowthMode] = useState<'yoy' | 'qoq'>('yoy')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [showPreMarket, setShowPreMarket] = useState(true)
+  const [showAfterHours, setShowAfterHours] = useState(true)
 
   useEffect(() => {
     if ((keys.finnhub || keys.fmp) && !loaded) {
@@ -28,14 +59,26 @@ export default function EarningsCalendar() {
     }
     setLoading(true); setError('')
     try {
+      const cache = loadEnrichmentCache()
       const r = await fetch('/api/earnings-calendar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fmpKey: keys.fmp, finnhubKey: keys.finnhub })
+        body: JSON.stringify({
+          fmpKey: keys.fmp, finnhubKey: keys.finnhub,
+          cachedEnrichment: cache, whenFilter: { pre: showPreMarket, after: showAfterHours },
+        })
       })
       const data = await r.json()
       if (data.error) throw new Error(data.error)
-      setEarnings(data.earnings || [])
+      const nextEarnings = data.earnings || []
+      const nextCache = { ...cache }
+      nextEarnings.forEach((e: any) => {
+        if (e.marketCap != null || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
+          nextCache[e.symbol] = { marketCap: e.marketCap, quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now() }
+        }
+      })
+      saveEnrichmentCache(nextCache)
+      setEarnings(nextEarnings)
     } catch (e: any) {
       setError('Error loading earnings: ' + e.message)
     }
@@ -44,10 +87,19 @@ export default function EarningsCalendar() {
 
   const today = new Date().toISOString().split('T')[0]
 
+  function timeCategory(time: string): 'pre' | 'after' | 'other' {
+    if (!time) return 'other'
+    if (time === 'bmo' || time.toLowerCase().includes('before')) return 'pre'
+    if (time === 'amc' || time.toLowerCase().includes('after')) return 'after'
+    return 'other'
+  }
+
   const filtered = earnings.filter(e => {
     if (!(!filter || e.symbol?.toLowerCase().includes(filter.toLowerCase()))) return false
-    if (period === 'today') return e.date === today
-    return period === 'past' ? e.date < today : e.date > today
+    if (period === 'today') { if (e.date !== today) return false } else { if (!(period === 'past' ? e.date < today : e.date > today)) return false }
+    if (showPreMarket && showAfterHours) return true
+    const cat = timeCategory(e.time)
+    return (cat === 'pre' && showPreMarket) || (cat === 'after' && showAfterHours)
   })
 
   // Group by date
@@ -135,6 +187,19 @@ export default function EarningsCalendar() {
             <button onClick={() => setPeriod('past')} style={segStyle(period === 'past')}>Past 7 days</button>
             <button onClick={() => setPeriod('today')} style={segStyle(period === 'today')}>Today</button>
             <button onClick={() => setPeriod('future')} style={segStyle(period === 'future')}>Next 7 days</button>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#9b9b98', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>When</div>
+          <div style={{ display: 'flex', gap: 12, height: 36, alignItems: 'center', border: '1px solid #e5e5e3', borderRadius: 8, padding: '0 12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
+              <input type="checkbox" checked={showPreMarket} onChange={e => setShowPreMarket(e.target.checked)} />
+              Pre-market
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', color: '#6b6b68' }}>
+              <input type="checkbox" checked={showAfterHours} onChange={e => setShowAfterHours(e.target.checked)} />
+              After-hours
+            </label>
           </div>
         </div>
         <div>
