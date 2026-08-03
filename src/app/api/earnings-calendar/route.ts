@@ -35,6 +35,24 @@ function growthPct(current: number | null | undefined, prior: number | null | un
   return ((current - prior) / Math.abs(prior)) * 100
 }
 
+// Finnhub's stock/metric?metric=all (Basic Financials, free tier) includes both 52-week range and
+// pre-computed price-vs-S&P500 relative strength -- undocumented on their rendered docs site (which
+// only shows a partial example), but confirmed against real API responses shared in Finnhub's own
+// GitHub issue tracker. Field names below match that. If Finnhub ever renames these, the numbers
+// degrade to null (shown as "—") rather than breaking anything.
+function num(v: any): number | null {
+  return typeof v === 'number' && !Number.isNaN(v) ? v : null
+}
+function extractBasicMetrics(basicFinancials: any) {
+  const m = basicFinancials?.metric || {}
+  return {
+    week52High: num(m['52WeekHigh']),
+    week52Low: num(m['52WeekLow']),
+    fiveDayReturnPct: num(m['5DayPriceReturnDaily']),
+    rsMonthPct: num(m['priceRelativeToS&P5004Week']),
+  }
+}
+
 // Revenue isn't a single standardized XBRL tag -- it varies by industry (a REIT reports "net
 // interest income", a bank "noninterest income", a normal company "net sales"/"revenues"). This
 // tries the common tags in priority order; it won't be perfect for every company, but covers the
@@ -110,6 +128,19 @@ async function fetchSecFactsForSymbol(symbol: string, cik: string | undefined) {
     if (fallbackCik && fallbackCik !== cik) facts = await fetchSecFacts(fallbackCik)
   }
   return facts
+}
+
+// SEC's own internal filing-review office grouping -- coarser than GICS (only ~10 buckets, e.g.
+// "06 Technology", "02 Finance", "01 Energy & Transportation"), but it's a genuine free sector
+// classification. Finnhub's finnhubIndustry (already fetched via profile2) stays as the more granular
+// "Industry" field; this is the broader "Sector" on top of it.
+async function fetchSecSector(cik: string): Promise<string | null> {
+  try {
+    const r = await fetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
+    if (!r.ok) return null
+    const d = await r.json()
+    return typeof d?.ownerOrg === 'string' ? d.ownerOrg.replace(/^\d+\s*/, '') : null
+  } catch { return null }
 }
 
 function spanDays(item: any): number | null {
@@ -307,8 +338,12 @@ const CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 export async function POST(req: NextRequest) {
   try {
     const { fmpKey, finnhubKey, cachedEnrichment } = await req.json()
-    const cache: Record<string, { marketCap?: number | null; industry?: string | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
-      cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
+    const cache: Record<string, {
+      marketCap?: number | null; industry?: string | null; sector?: string | null;
+      pctFromWeek52High?: number | null; pctFromWeek52Low?: number | null;
+      rsWeekPct?: number | null; rsMonthPct?: number | null;
+      quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number
+    }> = cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
     const today = new Date().toISOString().split('T')[0]
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -411,12 +446,32 @@ export async function POST(req: NextRequest) {
 
       const capBySymbol = new Map<string, number>()
       const industryBySymbol = new Map<string, string>()
+      const sectorBySymbol = new Map<string, string>()
+      const pctFromHighBySymbol = new Map<string, number>()
+      const pctFromLowBySymbol = new Map<string, number>()
+      const rsWeekBySymbol = new Map<string, number>()
+      const rsMonthBySymbol = new Map<string, number>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
       const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
 
       const cikMap = await getTickerCikMap()
 
-      const ENRICH_BATCH_SIZE = 10
+      // 1-week relative strength has no pre-computed Finnhub field (unlike the 1-month one below), so
+      // it's derived by diffing the stock's own 5-day return against SPY's -- needs SPY's number once
+      // per request, not per symbol. Skipped entirely if every symbol is already served from cache.
+      const anyUncached = symbols.some(sym => {
+        const c = cache[sym]
+        return !(c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS)
+      })
+      const spyMetrics = anyUncached
+        ? extractBasicMetrics(await fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=SPY&metric=all&token=${finnhubKey}`))
+        : null
+
+      // Each uncached symbol now costs 4 Finnhub calls (profile2, stock/earnings, stock/metric,
+      // quote) instead of the previous 2, so the batch size is halved to keep the per-batch Finnhub
+      // burst (20 calls) the same as before -- caching means this only bites on the first load of the
+      // day per symbol, but that first load still needs to stay under the 60/min ceiling.
+      const ENRICH_BATCH_SIZE = 5
       const ENRICH_BATCH_DELAY_MS = 1000
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
@@ -426,20 +481,42 @@ export async function POST(req: NextRequest) {
           if (cacheIsFresh) {
             if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
             if (cached!.industry) industryBySymbol.set(sym, cached!.industry as string)
+            if (cached!.sector) sectorBySymbol.set(sym, cached!.sector as string)
+            if (cached!.pctFromWeek52High != null) pctFromHighBySymbol.set(sym, cached!.pctFromWeek52High as number)
+            if (cached!.pctFromWeek52Low != null) pctFromLowBySymbol.set(sym, cached!.pctFromWeek52Low as number)
+            if (cached!.rsWeekPct != null) rsWeekBySymbol.set(sym, cached!.rsWeekPct as number)
+            if (cached!.rsMonthPct != null) rsMonthBySymbol.set(sym, cached!.rsMonthPct as number)
             if (cached!.quarterlyHistory) quartersBySymbol.set(sym, cached!.quarterlyHistory as any)
             if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
             return // already have this for today -- skip Finnhub/SEC entirely
           }
 
           const cik = cikMap.get(sym.toUpperCase())
-          const [fhProfile, facts, fhEarningsHistory] = await Promise.all([
+          const [fhProfile, facts, fhEarningsHistory, basicFinancials, quote, sector] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
             fetchSecFactsForSymbol(sym, cik),
             fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`),
+            fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`),
+            fhJson(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`),
+            cik ? fetchSecSector(cik) : Promise.resolve(null),
           ])
 
           if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
           if (fhProfile?.finnhubIndustry) industryBySymbol.set(sym, fhProfile.finnhubIndustry)
+          if (sector) sectorBySymbol.set(sym, sector)
+
+          // "Latest price" here is Finnhub's quote `c` -- during market hours it's the live price,
+          // but for most of when this dashboard actually gets checked (pre-market, after-hours,
+          // weekends) it settles to the prior session's actual close, which is exactly what was asked
+          // for: a once-a-day reference point, not a tick-by-tick feed.
+          const { week52High, week52Low, fiveDayReturnPct, rsMonthPct } = extractBasicMetrics(basicFinancials)
+          const latestPrice = num(quote?.c)
+          if (latestPrice != null && week52High) pctFromHighBySymbol.set(sym, ((latestPrice - week52High) / week52High) * 100)
+          if (latestPrice != null && week52Low) pctFromLowBySymbol.set(sym, ((latestPrice - week52Low) / week52Low) * 100)
+          if (rsMonthPct != null) rsMonthBySymbol.set(sym, rsMonthPct)
+          if (fiveDayReturnPct != null && spyMetrics?.fiveDayReturnPct != null) {
+            rsWeekBySymbol.set(sym, fiveDayReturnPct - spyMetrics.fiveDayReturnPct)
+          }
 
           if (facts) {
             const quarters = attachEpsSurprise(
@@ -475,6 +552,11 @@ export async function POST(req: NextRequest) {
           ...e,
           marketCap: capBySymbol.get(e.symbol) ?? null,
           industry: industryBySymbol.get(e.symbol) ?? null,
+          sector: sectorBySymbol.get(e.symbol) ?? null,
+          pctFromWeek52High: pctFromHighBySymbol.get(e.symbol) ?? null,
+          pctFromWeek52Low: pctFromLowBySymbol.get(e.symbol) ?? null,
+          rsWeekPct: rsWeekBySymbol.get(e.symbol) ?? null,
+          rsMonthPct: rsMonthBySymbol.get(e.symbol) ?? null,
           epsGrowthPctYoy,
           revenueGrowthPctYoy,
           quarterlyHistory: quarters,

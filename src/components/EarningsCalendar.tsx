@@ -10,7 +10,12 @@ const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
 const ENRICHMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const AUTO_REFRESH_MS = 60 * 1000
 
-type CachedEnrichment = { marketCap?: number | null; industry?: string | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number }
+type CachedEnrichment = {
+  marketCap?: number | null; industry?: string | null; sector?: string | null;
+  pctFromWeek52High?: number | null; pctFromWeek52Low?: number | null;
+  rsWeekPct?: number | null; rsMonthPct?: number | null;
+  quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number
+}
 
 function loadEnrichmentCache(): Record<string, CachedEnrichment> {
   try {
@@ -83,7 +88,12 @@ export default function EarningsCalendar() {
       const nextCache = { ...cache }
       nextEarnings.forEach((e: any) => {
         if (e.marketCap != null || e.industry || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
-          nextCache[e.symbol] = { marketCap: e.marketCap, industry: e.industry, quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now() }
+          nextCache[e.symbol] = {
+            marketCap: e.marketCap, industry: e.industry, sector: e.sector,
+            pctFromWeek52High: e.pctFromWeek52High, pctFromWeek52Low: e.pctFromWeek52Low,
+            rsWeekPct: e.rsWeekPct, rsMonthPct: e.rsMonthPct,
+            quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now()
+          }
         }
       })
       saveEnrichmentCache(nextCache)
@@ -299,13 +309,18 @@ export default function EarningsCalendar() {
                         {isOpen && hasAnyHistory && (
                           <tr style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
                             <td colSpan={9} style={{ padding: '0 12px 12px 32px', background: '#f8f8f7' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '8px 0 6px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', margin: '8px 0 6px', gap: 16, flexWrap: 'wrap' }}>
                                 <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                   {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
                                 </div>
-                                {e.industry && (
-                                  <div style={{ fontSize: 11, color: '#6b6b68' }}>Industry: <span style={{ fontWeight: 600, color: '#1a1a18' }}>{e.industry}</span></div>
-                                )}
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', fontSize: 11, color: '#6b6b68', justifyContent: 'flex-end' }}>
+                                  {e.sector && <span>Sector: <b style={{ color: '#1a1a18' }}>{e.sector}</b></span>}
+                                  {e.industry && <span>Industry: <b style={{ color: '#1a1a18' }}>{e.industry}</b></span>}
+                                  {e.rsWeekPct != null && <span>RS 1W vs SPY: <b style={{ color: pctColor(e.rsWeekPct) }}>{fmtPct(e.rsWeekPct)}</b></span>}
+                                  {e.rsMonthPct != null && <span>RS 1M vs SPY: <b style={{ color: pctColor(e.rsMonthPct) }}>{fmtPct(e.rsMonthPct)}</b></span>}
+                                  {e.pctFromWeek52High != null && <span>vs 52W High: <b style={{ color: pctColor(e.pctFromWeek52High) }}>{fmtPct(e.pctFromWeek52High)}</b></span>}
+                                  {e.pctFromWeek52Low != null && <span>vs 52W Low: <b style={{ color: pctColor(e.pctFromWeek52Low) }}>{fmtPct(e.pctFromWeek52Low)}</b></span>}
+                                </div>
                               </div>
                               {hasHistory ? (
                                 <>
@@ -337,6 +352,7 @@ export default function EarningsCalendar() {
                                   <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 6 }}>
                                     EPS is as-reported (GAAP) — can look choppy for companies with one-time charges (M&amp;A, impairments), which is normal.
                                     {historyView === 'quarterly' && ' EPS Surprise % is only available for the last ~4 quarters (Finnhub free tier limit); revenue surprise has no free historical source, so it isn’t shown here — only on today’s own report above.'}
+                                    {' RS and vs 52W High/Low use the latest daily close (not live intraday price), refreshed once per day per symbol.'}
                                   </div>
                                 </>
                               ) : (
