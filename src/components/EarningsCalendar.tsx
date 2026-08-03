@@ -372,8 +372,14 @@ export default function EarningsCalendar() {
                     const key = `${e.symbol}_${e.date}`
                     const tl = timeLabel(e.time)
                     const reported = e.epsActual != null
-                    const epsSurprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
-                    const revenueSurprisePct = reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
+                    // Same >300% sanity cap as the server applies to EPS Growth (YoY) -- without it,
+                    // exactly the cases where Growth gets suppressed (implausible GAAP-vs-adjusted-EPS
+                    // mismatch) would show an equally implausible, uncapped Surprise % instead, which
+                    // read as an inconsistency (Growth hidden as unreliable, Surprise shown anyway).
+                    let epsSurprisePct = reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
+                    if (epsSurprisePct != null && Math.abs(epsSurprisePct) > 300) epsSurprisePct = null
+                    let revenueSurprisePct = reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
+                    if (revenueSurprisePct != null && Math.abs(revenueSurprisePct) > 300) revenueSurprisePct = null
                     const isOpen = expanded.has(key)
                     const historyRows = historyView === 'quarterly' ? e.quarterlyHistory : e.annualHistory
                     const hasHistory = Array.isArray(historyRows) && historyRows.length > 0
