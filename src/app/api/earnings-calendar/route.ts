@@ -125,6 +125,20 @@ async function fetchSecFactsForSymbol(symbol: string, cik: string | undefined) {
   return facts
 }
 
+// SEC's own internal filing-review office grouping -- coarser than GICS (only ~10 buckets, e.g.
+// "06 Technology", "02 Finance", "01 Energy & Transportation"), but it's a genuine free sector
+// classification. Finnhub's finnhubIndustry (already fetched via profile2, no extra call) stays as
+// the more granular "Industry" field; this is the broader "Sector" on top of it. One extra SEC call
+// per symbol -- SEC's ~10 req/sec fair-use limit has plenty of headroom for this, unlike Finnhub.
+async function fetchSecSector(cik: string): Promise<string | null> {
+  try {
+    const r = await fetch(`https://data.sec.gov/submissions/CIK${cik}.json`, { headers: { 'User-Agent': SEC_AGENT } })
+    if (!r.ok) return null
+    const d = await r.json()
+    return typeof d?.ownerOrg === 'string' ? d.ownerOrg.replace(/^\d+\s*/, '') : null
+  } catch { return null }
+}
+
 function spanDays(item: any): number | null {
   if (!item.start || !item.end) return null
   const s = new Date(item.start).getTime()
@@ -312,8 +326,10 @@ function findYoyMatch(reportDate: string, quarters: { date: string | null }[]) {
 export async function POST(req: NextRequest) {
   try {
     const { fmpKey, finnhubKey, cachedEnrichment, whenFilter } = await req.json()
-    const cache: Record<string, { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
-      cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
+    const cache: Record<string, {
+      marketCap?: number | null; industry?: string | null; sector?: string | null;
+      quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number
+    }> = cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
     const wf: { pre: boolean; after: boolean } =
       whenFilter && typeof whenFilter === 'object' ? whenFilter : { pre: true, after: true }
     const today = new Date().toISOString().split('T')[0]
@@ -434,6 +450,8 @@ export async function POST(req: NextRequest) {
       symbols = symbols.filter(s => !isCacheFresh(s)).concat(symbols.filter(isCacheFresh)).slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
+      const industryBySymbol = new Map<string, string>()
+      const sectorBySymbol = new Map<string, string>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
       const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
 
@@ -447,19 +465,24 @@ export async function POST(req: NextRequest) {
           const cached = cache[sym]
           if (isCacheFresh(sym)) {
             if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
+            if (cached!.industry) industryBySymbol.set(sym, cached!.industry as string)
+            if (cached!.sector) sectorBySymbol.set(sym, cached!.sector as string)
             if (cached!.quarterlyHistory) quartersBySymbol.set(sym, cached!.quarterlyHistory as any)
             if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
             return // already have this, still within the cache window -- skip Finnhub/SEC entirely
           }
 
           const cik = cikMap.get(sym.toUpperCase())
-          const [fhProfile, facts, fhEarningsHistory] = await Promise.all([
+          const [fhProfile, facts, fhEarningsHistory, sector] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
             fetchSecFactsForSymbol(sym, cik),
             fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`),
+            cik ? fetchSecSector(cik) : Promise.resolve(null),
           ])
 
           if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
+          if (fhProfile?.finnhubIndustry) industryBySymbol.set(sym, fhProfile.finnhubIndustry)
+          if (sector) sectorBySymbol.set(sym, sector)
 
           if (facts) {
             const quarters = attachEpsSurprise(
@@ -494,6 +517,8 @@ export async function POST(req: NextRequest) {
         return {
           ...e,
           marketCap: capBySymbol.get(e.symbol) ?? null,
+          industry: industryBySymbol.get(e.symbol) ?? null,
+          sector: sectorBySymbol.get(e.symbol) ?? null,
           epsGrowthPctYoy,
           revenueGrowthPctYoy,
           quarterlyHistory: quarters,
