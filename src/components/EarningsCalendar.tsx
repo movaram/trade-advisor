@@ -127,6 +127,19 @@ export default function EarningsCalendar() {
     return guess
   }
 
+  // Friday's after-hours shifts to Saturday by the raw timezone math -- but nobody's checking the app
+  // on a Saturday, so that result would otherwise just vanish until the user happens to look at the
+  // weekend bucket. Roll it (and, in principle, any other weekend landing) forward to the next weekday
+  // instead, so "yesterday's" after-hours always surfaces on the next day the user would actually open
+  // the app -- Monday, for a Friday report.
+  function nextWeekday(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00')
+    const day = d.getDay() // 0 = Sunday, 6 = Saturday
+    if (day === 6) d.setDate(d.getDate() + 2)
+    else if (day === 0) d.setDate(d.getDate() + 1)
+    return localDateString(d)
+  }
+
   // After-hours earnings post around 4-4:30pm ET -- for a user far enough ahead of US time (like
   // Armenia, UTC+4, ~8-9 hours ahead), that moment has already rolled into the next local calendar
   // day. Bucketing by the raw US trading date would bury "just released" after-hours news under a day
@@ -136,7 +149,7 @@ export default function EarningsCalendar() {
   function displayDateFor(e: any): string {
     if (!e.date) return e.date
     if (timeCategory(e.time) === 'after') {
-      return localDateString(etTimeToUtcDate(e.date, 16, 15))
+      return nextWeekday(localDateString(etTimeToUtcDate(e.date, 16, 15)))
     }
     return e.date
   }
