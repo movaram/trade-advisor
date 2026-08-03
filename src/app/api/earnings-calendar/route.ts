@@ -24,15 +24,21 @@ function usEasternDateString(date: Date): string {
 // rate-limit budget that even the plain calendar call on the *next* auto-refresh started failing,
 // collapsing the whole list from 150+ companies down to 2.
 //
-// First fix capped the RS/52-week extras to the first MAX_RS_LOOKUPS symbols -- but with
+// Second attempt capped the RS/52-week extras to the first MAX_RS_LOOKUPS symbols -- but with
 // MAX_RS_LOOKUPS=10 equal to the batch size, ALL of them landed in batch 1 (10 x 4 = 40 calls fired
-// at once), which is still a big enough spike to cost some of those symbols their *core* enrichment
-// too (market cap, growth%) even though core-only batches right after it were fine. Finnhub's
-// rejections look concurrency-sensitive, not just a clean per-minute counter -- a big simultaneous
-// burst can partially fail even when the rolling-minute total is nominally under budget.
-// MAX_RS_LOOKUPS is now much smaller than the batch size, so the RS extras only add a small amount
-// on top of any one batch instead of making up most of it.
-const MAX_ENRICH_LOOKUPS = 50
+// at once), which was still enough to cost some of those symbols their *core* enrichment too (market
+// cap, growth%), even though core-only batches right after it were fine. Worse: MAX_ENRICH_LOOKUPS
+// picked a fixed *prefix* of that day's symbols every single request -- so whichever symbols landed
+// late enough to get rate-limited stayed permanently blank all day (every refresh re-tried the exact
+// same doomed tail), while the same early symbols kept "succeeding" for free once cached. Symptom:
+// the same ~9 tickers always had data, the same ~17 never did, across many refreshes.
+//
+// MAX_ENRICH_LOOKUPS now caps *fresh* (not-yet-cached) enrichment per request, not total symbols.
+// Already-cached symbols are always served for free regardless of count; only the fresh subset costs
+// API calls, and that subset is small enough to stay safely under Finnhub's limit. A busy day's full
+// coverage completes gradually over a few auto-refresh cycles -- each one enriches the next batch of
+// still-uncached symbols -- rather than trying (and partially failing) to do everything in one shot.
+const MAX_ENRICH_LOOKUPS = 15
 const MAX_RS_LOOKUPS = 3
 
 async function fhJson(url: string) {
@@ -481,8 +487,24 @@ export async function POST(req: NextRequest) {
       // discrete and cumulative figures as separate facts, so no derive-by-subtraction is needed, it
       // goes back many more years, and it's off Finnhub's 60/min budget entirely (SEC's own limit is
       // a much more generous ~10 req/sec).
-      let symbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
-      symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
+      const allTodaySymbols = Array.from(new Set(earnings.filter(e => e.date === today).map(e => e.symbol).filter(Boolean)))
+
+      const isCacheFresh = (sym: string) => {
+        const c = cache[sym]
+        return c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS && c.marketCap != null
+      }
+
+      // Trying to freshly enrich every one of a busy day's symbols in a single request is what kept
+      // overwhelming Finnhub's rate limit -- even a "safe-looking" total call count could partially
+      // fail because a large simultaneous batch seems to trigger rejections on its own, independent of
+      // the per-minute total. Instead: serve every already-cached symbol for free (no calls at all),
+      // and cap *fresh* enrichment to a small, genuinely safe number per request. A busy day's coverage
+      // then completes gradually over a few auto-refresh cycles (each one enriches the next batch of
+      // not-yet-cached symbols) instead of trying and failing to do it all at once -- and once a symbol
+      // is cached, it stays complete for the rest of the day.
+      const cachedSymbols = allTodaySymbols.filter(isCacheFresh)
+      const freshSymbols = allTodaySymbols.filter(sym => !isCacheFresh(sym)).slice(0, MAX_ENRICH_LOOKUPS)
+      const symbols = cachedSymbols.concat(freshSymbols)
 
       const capBySymbol = new Map<string, number>()
       const industryBySymbol = new Map<string, string>()
@@ -496,18 +518,14 @@ export async function POST(req: NextRequest) {
 
       const cikMap = await getTickerCikMap()
 
-      // Only the first MAX_RS_LOOKUPS symbols get the 2 extra RS/52-week calls (see the comment on
-      // MAX_ENRICH_LOOKUPS above for why). Everyone else still gets full core enrichment.
-      const rsEligible = new Set(symbols.slice(0, MAX_RS_LOOKUPS))
+      // Only the first MAX_RS_LOOKUPS *freshly-fetched* symbols get the 2 extra RS/52-week calls (see
+      // the comment on MAX_ENRICH_LOOKUPS above for why). Everyone else still gets full core enrichment.
+      const rsEligible = new Set(freshSymbols.slice(0, MAX_RS_LOOKUPS))
 
       // 1-week relative strength has no pre-computed Finnhub field (unlike the 1-month one below), so
       // it's derived by diffing the stock's own 5-day return against SPY's -- needs SPY's number once
       // per request, not per symbol. Skipped entirely if no RS-eligible symbol actually needs fetching.
-      const anyRsUncached = Array.from(rsEligible).some(sym => {
-        const c = cache[sym]
-        return !(c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS)
-      })
-      const spyMetrics = anyRsUncached
+      const spyMetrics = rsEligible.size > 0
         ? extractBasicMetrics(await fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=SPY&metric=all&token=${finnhubKey}`))
         : null
 
