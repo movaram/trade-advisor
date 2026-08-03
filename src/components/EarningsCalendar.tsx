@@ -10,7 +10,7 @@ const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
 const ENRICHMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const AUTO_REFRESH_MS = 60 * 1000
 
-type CachedEnrichment = { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number }
+type CachedEnrichment = { marketCap?: number | null; industry?: string | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt: number }
 
 function loadEnrichmentCache(): Record<string, CachedEnrichment> {
   try {
@@ -82,8 +82,8 @@ export default function EarningsCalendar() {
       const nextEarnings = data.earnings || []
       const nextCache = { ...cache }
       nextEarnings.forEach((e: any) => {
-        if (e.marketCap != null || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
-          nextCache[e.symbol] = { marketCap: e.marketCap, quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now() }
+        if (e.marketCap != null || e.industry || (Array.isArray(e.quarterlyHistory) && e.quarterlyHistory.length > 0)) {
+          nextCache[e.symbol] = { marketCap: e.marketCap, industry: e.industry, quarterlyHistory: e.quarterlyHistory, annualHistory: e.annualHistory, cachedAt: Date.now() }
         }
       })
       saveEnrichmentCache(nextCache)
@@ -299,8 +299,13 @@ export default function EarningsCalendar() {
                         {isOpen && hasAnyHistory && (
                           <tr style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
                             <td colSpan={9} style={{ padding: '0 12px 12px 32px', background: '#f8f8f7' }}>
-                              <div style={{ fontSize: 11, color: '#9b9b98', margin: '8px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '8px 0 6px' }}>
+                                <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                  {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
+                                </div>
+                                {e.industry && (
+                                  <div style={{ fontSize: 11, color: '#6b6b68' }}>Industry: <span style={{ fontWeight: 600, color: '#1a1a18' }}>{e.industry}</span></div>
+                                )}
                               </div>
                               {hasHistory ? (
                                 <>

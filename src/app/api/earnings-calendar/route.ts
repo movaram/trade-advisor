@@ -307,7 +307,7 @@ const CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 export async function POST(req: NextRequest) {
   try {
     const { fmpKey, finnhubKey, cachedEnrichment } = await req.json()
-    const cache: Record<string, { marketCap?: number | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
+    const cache: Record<string, { marketCap?: number | null; industry?: string | null; quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number }> =
       cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
     const today = new Date().toISOString().split('T')[0]
     const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -410,6 +410,7 @@ export async function POST(req: NextRequest) {
       symbols = symbols.slice(0, MAX_ENRICH_LOOKUPS)
 
       const capBySymbol = new Map<string, number>()
+      const industryBySymbol = new Map<string, string>()
       const quartersBySymbol = new Map<string, ReturnType<typeof withGrowth>>()
       const annualBySymbol = new Map<string, ReturnType<typeof annualWithYoy>>()
 
@@ -424,6 +425,7 @@ export async function POST(req: NextRequest) {
           const cacheIsFresh = cached?.cachedAt != null && Date.now() - cached.cachedAt < CLIENT_CACHE_TTL_MS
           if (cacheIsFresh) {
             if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
+            if (cached!.industry) industryBySymbol.set(sym, cached!.industry as string)
             if (cached!.quarterlyHistory) quartersBySymbol.set(sym, cached!.quarterlyHistory as any)
             if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
             return // already have this for today -- skip Finnhub/SEC entirely
@@ -437,6 +439,7 @@ export async function POST(req: NextRequest) {
           ])
 
           if (fhProfile?.marketCapitalization != null) capBySymbol.set(sym, fhProfile.marketCapitalization * 1e6)
+          if (fhProfile?.finnhubIndustry) industryBySymbol.set(sym, fhProfile.finnhubIndustry)
 
           if (facts) {
             const quarters = attachEpsSurprise(
@@ -471,6 +474,7 @@ export async function POST(req: NextRequest) {
         return {
           ...e,
           marketCap: capBySymbol.get(e.symbol) ?? null,
+          industry: industryBySymbol.get(e.symbol) ?? null,
           epsGrowthPctYoy,
           revenueGrowthPctYoy,
           quarterlyHistory: quarters,
