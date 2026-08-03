@@ -9,10 +9,20 @@ const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 // Enrichment costs 2 Finnhub calls (market cap, historical EPS surprise%) + 1 SEC call (EPS/Sales
 // history) per symbol that isn't already in the client's cache (see CLIENT_CACHE_TTL_MS below) --
 // batched to stay polite to both providers, Finnhub's 60/min limit and SEC's ~10 req/sec fair-use
-// guidance. Each batch adds ~1s of delay; at 60 symbols / batch size 10 that's ~5s of added delay
-// plus fetch time, well inside the 60s ceiling set above. Only the first load of the day actually
-// pays this cost for a given symbol; every refresh after that serves cached symbols for free.
-const MAX_ENRICH_LOOKUPS = 60
+// guidance. Only the first load of the day actually pays this cost for a given symbol; every refresh
+// after that serves cached symbols for free.
+//
+// MAX_ENRICH_LOOKUPS was briefly 60 with 4 Finnhub calls/symbol (adding stock/metric + quote for
+// RS/52-week) -- that pushed a full first-load burst to ~240 Finnhub calls in well under a minute,
+// 4x the 60/min limit, and it didn't just leave the new fields blank: it burned through enough of the
+// rate-limit budget that even the plain calendar call on the *next* auto-refresh started failing,
+// collapsing the whole list from 150+ companies down to 2. Fix: only the first MAX_RS_LOOKUPS symbols
+// get the 2 extra RS/52-week calls; the rest still get full core enrichment (market cap, EPS
+// surprise%, SEC history, sector) at the original 2-Finnhub-call cost. Worst case is one heavier
+// first batch (MAX_RS_LOOKUPS x 4 calls) then steady-state batches at 2 calls/symbol -- total stays
+// close to the previously-safe ~123-call ceiling instead of ~240.
+const MAX_ENRICH_LOOKUPS = 50
+const MAX_RS_LOOKUPS = 10
 
 async function fhJson(url: string) {
   try {
@@ -456,22 +466,22 @@ export async function POST(req: NextRequest) {
 
       const cikMap = await getTickerCikMap()
 
+      // Only the first MAX_RS_LOOKUPS symbols get the 2 extra RS/52-week calls (see the comment on
+      // MAX_ENRICH_LOOKUPS above for why). Everyone else still gets full core enrichment.
+      const rsEligible = new Set(symbols.slice(0, MAX_RS_LOOKUPS))
+
       // 1-week relative strength has no pre-computed Finnhub field (unlike the 1-month one below), so
       // it's derived by diffing the stock's own 5-day return against SPY's -- needs SPY's number once
-      // per request, not per symbol. Skipped entirely if every symbol is already served from cache.
-      const anyUncached = symbols.some(sym => {
+      // per request, not per symbol. Skipped entirely if no RS-eligible symbol actually needs fetching.
+      const anyRsUncached = Array.from(rsEligible).some(sym => {
         const c = cache[sym]
         return !(c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS)
       })
-      const spyMetrics = anyUncached
+      const spyMetrics = anyRsUncached
         ? extractBasicMetrics(await fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=SPY&metric=all&token=${finnhubKey}`))
         : null
 
-      // Each uncached symbol now costs 4 Finnhub calls (profile2, stock/earnings, stock/metric,
-      // quote) instead of the previous 2, so the batch size is halved to keep the per-batch Finnhub
-      // burst (20 calls) the same as before -- caching means this only bites on the first load of the
-      // day per symbol, but that first load still needs to stay under the 60/min ceiling.
-      const ENRICH_BATCH_SIZE = 5
+      const ENRICH_BATCH_SIZE = 10
       const ENRICH_BATCH_DELAY_MS = 1000
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
@@ -492,12 +502,13 @@ export async function POST(req: NextRequest) {
           }
 
           const cik = cikMap.get(sym.toUpperCase())
+          const wantsRs = rsEligible.has(sym)
           const [fhProfile, facts, fhEarningsHistory, basicFinancials, quote, sector] = await Promise.all([
             fhJson(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${finnhubKey}`),
             fetchSecFactsForSymbol(sym, cik),
             fhJson(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`),
-            fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`),
-            fhJson(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`),
+            wantsRs ? fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${finnhubKey}`) : Promise.resolve(null),
+            wantsRs ? fhJson(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${finnhubKey}`) : Promise.resolve(null),
             cik ? fetchSecSector(cik) : Promise.resolve(null),
           ])
 
@@ -505,17 +516,19 @@ export async function POST(req: NextRequest) {
           if (fhProfile?.finnhubIndustry) industryBySymbol.set(sym, fhProfile.finnhubIndustry)
           if (sector) sectorBySymbol.set(sym, sector)
 
-          // "Latest price" here is Finnhub's quote `c` -- during market hours it's the live price,
-          // but for most of when this dashboard actually gets checked (pre-market, after-hours,
-          // weekends) it settles to the prior session's actual close, which is exactly what was asked
-          // for: a once-a-day reference point, not a tick-by-tick feed.
-          const { week52High, week52Low, fiveDayReturnPct, rsMonthPct } = extractBasicMetrics(basicFinancials)
-          const latestPrice = num(quote?.c)
-          if (latestPrice != null && week52High) pctFromHighBySymbol.set(sym, ((latestPrice - week52High) / week52High) * 100)
-          if (latestPrice != null && week52Low) pctFromLowBySymbol.set(sym, ((latestPrice - week52Low) / week52Low) * 100)
-          if (rsMonthPct != null) rsMonthBySymbol.set(sym, rsMonthPct)
-          if (fiveDayReturnPct != null && spyMetrics?.fiveDayReturnPct != null) {
-            rsWeekBySymbol.set(sym, fiveDayReturnPct - spyMetrics.fiveDayReturnPct)
+          if (wantsRs) {
+            // "Latest price" here is Finnhub's quote `c` -- during market hours it's the live price,
+            // but for most of when this dashboard actually gets checked (pre-market, after-hours,
+            // weekends) it settles to the prior session's actual close, which is exactly what was
+            // asked for: a once-a-day reference point, not a tick-by-tick feed.
+            const { week52High, week52Low, fiveDayReturnPct, rsMonthPct } = extractBasicMetrics(basicFinancials)
+            const latestPrice = num(quote?.c)
+            if (latestPrice != null && week52High) pctFromHighBySymbol.set(sym, ((latestPrice - week52High) / week52High) * 100)
+            if (latestPrice != null && week52Low) pctFromLowBySymbol.set(sym, ((latestPrice - week52Low) / week52Low) * 100)
+            if (rsMonthPct != null) rsMonthBySymbol.set(sym, rsMonthPct)
+            if (fiveDayReturnPct != null && spyMetrics?.fiveDayReturnPct != null) {
+              rsWeekBySymbol.set(sym, fiveDayReturnPct - spyMetrics.fiveDayReturnPct)
+            }
           }
 
           if (facts) {

@@ -352,7 +352,7 @@ export default function EarningsCalendar() {
                                   <div style={{ fontSize: 10, color: '#9b9b98', marginTop: 6 }}>
                                     EPS is as-reported (GAAP) — can look choppy for companies with one-time charges (M&amp;A, impairments), which is normal.
                                     {historyView === 'quarterly' && ' EPS Surprise % is only available for the last ~4 quarters (Finnhub free tier limit); revenue surprise has no free historical source, so it isn’t shown here — only on today’s own report above.'}
-                                    {' RS and vs 52W High/Low use the latest daily close (not live intraday price), refreshed once per day per symbol.'}
+                                    {' RS and vs 52W High/Low use the latest daily close (not live intraday price); only shown for the first 10 today\'s-reporters per load to stay within Finnhub\'s free-tier rate limit.'}
                                   </div>
                                 </>
                               ) : (
