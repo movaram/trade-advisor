@@ -367,13 +367,13 @@ export default function EarningsCalendar() {
                                 <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                   {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})
                                 </div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', fontSize: 11, color: '#6b6b68', justifyContent: 'flex-end' }}>
-                                  {e.sector && <span>Sector: <b style={{ color: '#1a1a18' }}>{e.sector}</b></span>}
-                                  {e.industry && <span>Industry: <b style={{ color: '#1a1a18' }}>{e.industry}</b></span>}
-                                  {e.rsWeekPct != null && <span>RS 1W vs SPY: <b style={{ color: pctColor(e.rsWeekPct) }}>{fmtPct(e.rsWeekPct)}</b></span>}
-                                  {e.rsMonthPct != null && <span>RS 1M vs SPY: <b style={{ color: pctColor(e.rsMonthPct) }}>{fmtPct(e.rsMonthPct)}</b></span>}
-                                  {e.pctFromWeek52High != null && <span>vs 52W High: <b style={{ color: pctColor(e.pctFromWeek52High) }}>{fmtPct(e.pctFromWeek52High)}</b></span>}
-                                  {e.pctFromWeek52Low != null && <span>vs 52W Low: <b style={{ color: pctColor(e.pctFromWeek52Low) }}>{fmtPct(e.pctFromWeek52Low)}</b></span>}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: '#6b6b68', alignItems: 'flex-end' }}>
+                                  {e.sector && <div>Sector: <b style={{ color: '#1a1a18' }}>{e.sector}</b></div>}
+                                  {e.industry && <div>Industry: <b style={{ color: '#1a1a18' }}>{e.industry}</b></div>}
+                                  {e.rsWeekPct != null && <div>RS 1W vs SPY: <b style={{ color: pctColor(e.rsWeekPct) }}>{fmtPct(e.rsWeekPct)}</b></div>}
+                                  {e.rsMonthPct != null && <div>RS 1M vs SPY: <b style={{ color: pctColor(e.rsMonthPct) }}>{fmtPct(e.rsMonthPct)}</b></div>}
+                                  {e.pctFromWeek52High != null && <div>vs 52W High: <b style={{ color: pctColor(e.pctFromWeek52High) }}>{fmtPct(e.pctFromWeek52High)}</b></div>}
+                                  {e.pctFromWeek52Low != null && <div>vs 52W Low: <b style={{ color: pctColor(e.pctFromWeek52Low) }}>{fmtPct(e.pctFromWeek52Low)}</b></div>}
                                 </div>
                               </div>
                               {hasHistory ? (
