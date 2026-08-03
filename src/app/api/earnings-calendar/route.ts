@@ -22,13 +22,18 @@ function usEasternDateString(date: Date): string {
 // RS/52-week) -- that pushed a full first-load burst to ~240 Finnhub calls in well under a minute,
 // 4x the 60/min limit, and it didn't just leave the new fields blank: it burned through enough of the
 // rate-limit budget that even the plain calendar call on the *next* auto-refresh started failing,
-// collapsing the whole list from 150+ companies down to 2. Fix: only the first MAX_RS_LOOKUPS symbols
-// get the 2 extra RS/52-week calls; the rest still get full core enrichment (market cap, EPS
-// surprise%, SEC history, sector) at the original 2-Finnhub-call cost. Worst case is one heavier
-// first batch (MAX_RS_LOOKUPS x 4 calls) then steady-state batches at 2 calls/symbol -- total stays
-// close to the previously-safe ~123-call ceiling instead of ~240.
+// collapsing the whole list from 150+ companies down to 2.
+//
+// First fix capped the RS/52-week extras to the first MAX_RS_LOOKUPS symbols -- but with
+// MAX_RS_LOOKUPS=10 equal to the batch size, ALL of them landed in batch 1 (10 x 4 = 40 calls fired
+// at once), which is still a big enough spike to cost some of those symbols their *core* enrichment
+// too (market cap, growth%) even though core-only batches right after it were fine. Finnhub's
+// rejections look concurrency-sensitive, not just a clean per-minute counter -- a big simultaneous
+// burst can partially fail even when the rolling-minute total is nominally under budget.
+// MAX_RS_LOOKUPS is now much smaller than the batch size, so the RS extras only add a small amount
+// on top of any one batch instead of making up most of it.
 const MAX_ENRICH_LOOKUPS = 50
-const MAX_RS_LOOKUPS = 10
+const MAX_RS_LOOKUPS = 3
 
 async function fhJson(url: string) {
   try {
@@ -506,8 +511,10 @@ export async function POST(req: NextRequest) {
         ? extractBasicMetrics(await fhJson(`https://finnhub.io/api/v1/stock/metric?symbol=SPY&metric=all&token=${finnhubKey}`))
         : null
 
-      const ENRICH_BATCH_SIZE = 10
-      const ENRICH_BATCH_DELAY_MS = 1000
+      // Smaller batch + slightly longer delay than before -- lower peak concurrency per burst, since
+      // that's what actually seemed to trigger partial failures, not just the per-minute total.
+      const ENRICH_BATCH_SIZE = 6
+      const ENRICH_BATCH_DELAY_MS = 1200
       for (let i = 0; i < symbols.length; i += ENRICH_BATCH_SIZE) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
