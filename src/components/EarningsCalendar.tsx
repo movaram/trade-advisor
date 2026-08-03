@@ -93,7 +93,13 @@ export default function EarningsCalendar() {
     setLoading(false)
   }
 
-  const today = new Date().toISOString().split('T')[0]
+  // Local calendar date (the browser's own timezone), not UTC -- "today" should mean the user's
+  // actual today, not whatever date UTC happens to be at this moment.
+  function localDateString(d: Date): string {
+    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  const today = localDateString(new Date())
 
   function timeCategory(time: string): 'pre' | 'after' | 'other' {
     if (!time) return 'other'
@@ -102,18 +108,52 @@ export default function EarningsCalendar() {
     return 'other'
   }
 
+  // Converts an hour:minute wall-clock time *in US Eastern* on a given date into the equivalent UTC
+  // instant, handling EST/EDT automatically (2 passes is enough to converge across the DST edge).
+  function etTimeToUtcDate(dateStr: string, hour: number, minute: number): Date {
+    let guess = new Date(`${dateStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00.000Z`)
+    for (let i = 0; i < 2; i++) {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      }).formatToParts(guess)
+      const get = (t: string) => Number(parts.find(p => p.type === t)?.value)
+      const actualAsUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'))
+      const wantedAsUtc = Date.UTC(
+        Number(dateStr.slice(0, 4)), Number(dateStr.slice(5, 7)) - 1, Number(dateStr.slice(8, 10)), hour, minute
+      )
+      guess = new Date(guess.getTime() + (wantedAsUtc - actualAsUtc))
+    }
+    return guess
+  }
+
+  // After-hours earnings post around 4-4:30pm ET -- for a user far enough ahead of US time (like
+  // Armenia, UTC+4, ~8-9 hours ahead), that moment has already rolled into the next local calendar
+  // day. Bucketing by the raw US trading date would bury "just released" after-hours news under a day
+  // the user has already moved past by the time it's actually known; this re-buckets those rows under
+  // whichever local day they'd actually become visible on. Pre-market rows aren't affected -- they
+  // post before 9:30am ET, which for anyone ahead of US time still falls on the same local day.
+  function displayDateFor(e: any): string {
+    if (!e.date) return e.date
+    if (timeCategory(e.time) === 'after') {
+      return localDateString(etTimeToUtcDate(e.date, 16, 15))
+    }
+    return e.date
+  }
+
   const filtered = earnings.filter(e => {
     if (!(!filter || e.symbol?.toLowerCase().includes(filter.toLowerCase()))) return false
-    if (period === 'today') { if (e.date !== today) return false } else { if (!(period === 'past' ? e.date < today : e.date > today)) return false }
+    const d = displayDateFor(e)
+    if (period === 'today') { if (d !== today) return false } else { if (!(period === 'past' ? d < today : d > today)) return false }
     if (showPreMarket && showAfterHours) return true
     const cat = timeCategory(e.time)
     return (cat === 'pre' && showPreMarket) || (cat === 'after' && showAfterHours)
   })
 
-  // Group by date
+  // Group by (display) date
   const byDate: Record<string, any[]> = {}
   filtered.forEach((e: any) => {
-    const date = e.date || e.reportDate || '—'
+    const date = displayDateFor(e) || e.reportDate || '—'
     if (!byDate[date]) byDate[date] = []
     byDate[date].push(e)
   })
@@ -140,7 +180,7 @@ export default function EarningsCalendar() {
   }
 
   function isTomorrow(d: string) {
-    const tom = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    const tom = localDateString(new Date(Date.now() + 24 * 60 * 60 * 1000))
     return d === tom
   }
 

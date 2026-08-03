@@ -27,6 +27,20 @@ function timeCategory(time: string): 'pre' | 'after' | 'other' {
   return 'other'
 }
 
+// Current wall-clock time in US Eastern, used to decide whether an after-hours (amc) reporter's own
+// session has actually started yet -- their fundamentals (market cap, SEC history) don't change based
+// on timing, but there's no reason to spend API budget on them before ~4pm ET, when a pre-market
+// reporter's data is what's actually actionable right now.
+function usEasternMinutesNow(): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date())
+  const hour = Number(parts.find(p => p.type === 'hour')?.value) % 24
+  const minute = Number(parts.find(p => p.type === 'minute')?.value)
+  return hour * 60 + minute
+}
+const AFTER_HOURS_START_ET_MINUTES = 16 * 60 // 4:00pm ET
+
 async function fhJson(url: string) {
   try {
     const r = await fetch(url)
@@ -439,15 +453,27 @@ export async function POST(req: NextRequest) {
             const cat = timeCategory(e.time)
             return (cat === 'pre' && wf.pre) || (cat === 'after' && wf.after)
           })
-      let symbols = Array.from(new Set(visibleTodayRows.map(e => e.symbol).filter(Boolean)))
+      const symbols = Array.from(new Set(visibleTodayRows.map(e => e.symbol).filter(Boolean)))
+
+      const timeBySymbol = new Map<string, string>()
+      todayRows.forEach(e => { if (e.symbol && !timeBySymbol.has(e.symbol)) timeBySymbol.set(e.symbol, e.time) })
 
       const isCacheFresh = (sym: string) => {
         const c = cache[sym]
         return c?.cachedAt != null && Date.now() - c.cachedAt < CLIENT_CACHE_TTL_MS && c.marketCap != null
       }
-      // Not-yet-cached symbols go first so a slow/rate-limited day doesn't let the same already-cached
-      // (free) symbols crowd out ones that still actually need a real fetch, within the fixed cap.
-      symbols = symbols.filter(s => !isCacheFresh(s)).concat(symbols.filter(isCacheFresh)).slice(0, MAX_ENRICH_LOOKUPS)
+      const etMinutesNow = usEasternMinutesNow()
+      // After-hours reporters' fundamentals don't change based on timing, but there's no reason to
+      // compete for pre-market's API budget with data that isn't actionable until much later anyway --
+      // so a not-yet-cached after-hours symbol simply doesn't get a fresh fetch until we're at/past
+      // 4pm ET. It'll pick up on a later request once its own session has actually started; already-
+      // cached after-hours symbols are unaffected (cache is always served immediately below).
+      const needsFreshFetch = (sym: string) => {
+        if (isCacheFresh(sym)) return false
+        if (timeCategory(timeBySymbol.get(sym) || '') === 'after' && etMinutesNow < AFTER_HOURS_START_ET_MINUTES) return false
+        return true
+      }
+      const freshEligible = new Set(symbols.filter(needsFreshFetch).slice(0, MAX_ENRICH_LOOKUPS))
 
       const capBySymbol = new Map<string, number>()
       const industryBySymbol = new Map<string, string>()
@@ -471,6 +497,7 @@ export async function POST(req: NextRequest) {
             if (cached!.annualHistory) annualBySymbol.set(sym, cached!.annualHistory as any)
             return // already have this, still within the cache window -- skip Finnhub/SEC entirely
           }
+          if (!freshEligible.has(sym)) return // either past the per-request cap, or its own session (after-hours) hasn't started yet
 
           const cik = cikMap.get(sym.toUpperCase())
           const [fhProfile, facts, fhEarningsHistory, sector] = await Promise.all([
