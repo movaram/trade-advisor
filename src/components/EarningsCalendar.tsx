@@ -48,6 +48,8 @@ export default function EarningsCalendar() {
   const [historyView, setHistoryView] = useState<'quarterly' | 'annually'>('quarterly')
   const [growthMode, setGrowthMode] = useState<'yoy' | 'qoq'>('yoy')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [sortCol, setSortCol] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   useEffect(() => {
     if ((keys.finnhub || keys.fmp) && !loaded) {
@@ -184,6 +186,45 @@ export default function EarningsCalendar() {
     })
   }
 
+  function getSortValue(e: any, col: string): number | string | null {
+    switch (col) {
+      case 'ticker': return e.symbol || ''
+      case 'marketCap': return e.marketCap
+      case 'eps': return e.epsActual ?? e.epsEstimated
+      case 'epsGrowth': return e.epsGrowthPctYoy
+      case 'revenue': return e.revenueActual ?? e.revenueEstimated
+      case 'revenueGrowth': return e.revenueGrowthPctYoy
+      case 'epsSurprise': {
+        const reported = e.epsActual != null
+        return reported && e.epsEstimated ? ((e.epsActual - e.epsEstimated) / Math.abs(e.epsEstimated)) * 100 : null
+      }
+      case 'revenueSurprise': {
+        const reported = e.epsActual != null
+        return reported && e.revenueActual != null && e.revenueEstimated ? ((e.revenueActual - e.revenueEstimated) / Math.abs(e.revenueEstimated)) * 100 : null
+      }
+      default: return null
+    }
+  }
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortCol(col); setSortDir('desc') }
+  }
+
+  function sortRows(rows: any[]): any[] {
+    if (!sortCol) return rows
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      const va = getSortValue(a, sortCol)
+      const vb = getSortValue(b, sortCol)
+      if (va == null && vb == null) return 0
+      if (va == null) return 1 // nulls always sort last, regardless of direction
+      if (vb == null) return -1
+      if (typeof va === 'string' || typeof vb === 'string') return String(va).localeCompare(String(vb)) * dir
+      return (Number(va) - Number(vb)) * dir
+    })
+  }
+
   const segStyle = (active: boolean): React.CSSProperties => ({
     padding: '0 14px', height: 36, fontSize: 13, border: 'none', cursor: 'pointer',
     background: active ? '#1a1a18' : '#fff', color: active ? '#fff' : '#6b6b68', fontWeight: active ? 600 : 400
@@ -267,13 +308,26 @@ export default function EarningsCalendar() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #e5e5e3', background: '#f8f8f7' }}>
-                    {['Ticker', 'Mkt Cap', 'When', 'EPS', 'EPS Growth (YoY)', 'Revenue', 'Rev Growth (YoY)', 'EPS Surprise %', 'Rev Surprise %'].map(h => (
-                      <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                    {[
+                      { label: 'Ticker', key: 'ticker' },
+                      { label: 'Mkt Cap', key: 'marketCap' },
+                      { label: 'When' },
+                      { label: 'EPS', key: 'eps' },
+                      { label: 'EPS Growth (YoY)', key: 'epsGrowth' },
+                      { label: 'Revenue', key: 'revenue' },
+                      { label: 'Rev Growth (YoY)', key: 'revenueGrowth' },
+                      { label: 'EPS Surprise %', key: 'epsSurprise' },
+                      { label: 'Rev Surprise %', key: 'revenueSurprise' },
+                    ].map(h => (
+                      <th key={h.label} onClick={() => h.key && toggleSort(h.key)}
+                        style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: '#9b9b98', fontWeight: 500, whiteSpace: 'nowrap', cursor: h.key ? 'pointer' : 'default', userSelect: 'none' }}>
+                        {h.label}{h.key && sortCol === h.key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+                      </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {byDate[date].map((e: any, i: number) => {
+                  {sortRows(byDate[date]).map((e: any, i: number) => {
                     const key = `${e.symbol}_${e.date}`
                     const tl = timeLabel(e.time)
                     const reported = e.epsActual != null
@@ -308,7 +362,7 @@ export default function EarningsCalendar() {
                         </tr>
                         {isOpen && hasAnyHistory && (
                           <tr style={{ borderBottom: i < byDate[date].length - 1 ? '1px solid #e5e5e3' : 'none' }}>
-                            <td colSpan={9} style={{ padding: '0 12px 12px 32px', background: '#f8f8f7' }}>
+                            <td colSpan={9} style={{ padding: '0 32px 12px 32px', background: '#f8f8f7' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', margin: '8px 0 6px', gap: 16, flexWrap: 'wrap' }}>
                                 <div style={{ fontSize: 11, color: '#9b9b98', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                   {historyView === 'quarterly' ? 'Quarterly' : 'Annual'} EPS &amp; Sales (O'Neil/Bonde style — vs. {historyView === 'quarterly' ? (growthMode === 'yoy' ? 'same quarter last year' : 'previous quarter') : 'same year last year'})

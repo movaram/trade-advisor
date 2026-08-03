@@ -487,7 +487,12 @@ export async function POST(req: NextRequest) {
         const batch = symbols.slice(i, i + ENRICH_BATCH_SIZE)
         await Promise.all(batch.map(async (sym) => {
           const cached = cache[sym]
-          const cacheIsFresh = cached?.cachedAt != null && Date.now() - cached.cachedAt < CLIENT_CACHE_TTL_MS
+          // Age alone isn't enough -- a cache entry written while Finnhub was rate-limited (or any
+          // other transient failure) would otherwise get treated as "fresh" for a full day even
+          // though marketCap/industry never actually landed. Requiring marketCap != null means a
+          // partial/failed fetch self-heals on the very next request instead of being stuck until the
+          // TTL expires.
+          const cacheIsFresh = cached?.cachedAt != null && Date.now() - cached.cachedAt < CLIENT_CACHE_TTL_MS && cached.marketCap != null
           if (cacheIsFresh) {
             if (cached!.marketCap != null) capBySymbol.set(sym, cached!.marketCap as number)
             if (cached!.industry) industryBySymbol.set(sym, cached!.industry as string)
