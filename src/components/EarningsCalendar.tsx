@@ -10,6 +10,12 @@ const ENRICHMENT_CACHE_KEY = 'ta_earnings_enrichment_cache_v1'
 const ENRICHMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const AUTO_REFRESH_MS = 60 * 1000
 
+// US earnings calendars run on US Eastern Time regardless of where the browser's clock is set --
+// matches the same helper on the server (route.ts) so "today" means the same date on both sides.
+function usEasternDateString(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
+
 type CachedEnrichment = {
   marketCap?: number | null; industry?: string | null; sector?: string | null;
   pctFromWeek52High?: number | null; pctFromWeek52Low?: number | null;
@@ -109,7 +115,7 @@ export default function EarningsCalendar() {
     if (opts?.silent) setRefreshing(false); else setLoading(false)
   }
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = usEasternDateString(new Date())
 
   function timeCategory(time: string): 'pre' | 'after' | 'other' {
     if (!time) return 'other'
@@ -156,7 +162,7 @@ export default function EarningsCalendar() {
   }
 
   function isTomorrow(d: string) {
-    const tom = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    const tom = usEasternDateString(new Date(Date.now() + 24 * 60 * 60 * 1000))
     return d === tom
   }
 

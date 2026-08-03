@@ -6,6 +6,12 @@ export const maxDuration = 60
 
 const SEC_AGENT = 'TradeAdvisor movaram@proton.me'
 
+// US earnings calendars run on US Eastern Time regardless of where this server or its users are --
+// 'en-CA' formats as YYYY-MM-DD directly, and the America/New_York zone handles EST/EDT automatically.
+function usEasternDateString(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
+
 // Enrichment costs 2 Finnhub calls (market cap, historical EPS surprise%) + 1 SEC call (EPS/Sales
 // history) per symbol that isn't already in the client's cache (see CLIENT_CACHE_TTL_MS below) --
 // batched to stay polite to both providers, Finnhub's 60/min limit and SEC's ~10 req/sec fair-use
@@ -354,9 +360,15 @@ export async function POST(req: NextRequest) {
       rsWeekPct?: number | null; rsMonthPct?: number | null;
       quarterlyHistory?: any[]; annualHistory?: any[]; cachedAt?: number
     }> = cachedEnrichment && typeof cachedEnrichment === 'object' ? cachedEnrichment : {}
-    const today = new Date().toISOString().split('T')[0]
-    const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    // US earnings calendars (and SEC filings) run on US Eastern Time, not UTC. Using
+    // toISOString() here would make the server's "today" roll over 4-5 hours early every evening
+    // (whenever it's already past midnight UTC but still before midnight ET) -- during that window
+    // "today" silently meant "tomorrow", pushing the day's own earnings (including this morning's
+    // BMO reporters) out of every date range. This is very likely what caused the earlier
+    // "no earnings found today" reports throughout testing.
+    const today = usEasternDateString(new Date())
+    const nextWeek = usEasternDateString(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000))
+    const weekAgo = usEasternDateString(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
 
     // Both providers cap how many rows a single request can return (Finnhub silently truncates at
     // 1500 for its whole-range call, and on a busy week that cap gets hit before reaching every day
