@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import date as date_cls
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from news_service import get_news
 
 load_dotenv()
 
@@ -97,6 +100,21 @@ VERDICT RULES:
 - Score 2-3: WAIT ⚠️
 - Score 0-1: SKIP ❌
 
+NEWS SOURCE PRIORITY (weigh confidence accordingly, note it in catalyst_description if it matters):
+TIER 1 (highest confidence — official/regulatory): businesswire, prnewswire, globenewswire, sec.gov
+TIER 2 (high confidence — major wire/financial press): reuters, bloomberg, ft.com
+TIER 3 (lower confidence — commentary/opinion, verify claims before treating as fact): motleyfool, seekingalpha
+Each news item you're given includes its source_tier (1/2/3) and origin (massive = structured news
+feed, web_search = live web search fallback). Prefer tier-1/2 sources when they disagree with tier-3.
+
+CRITICAL — if the news list you're given is EMPTY, this does NOT mean there was no catalyst. It means
+neither the structured news feed nor a web search surfaced anything for this specific date -- the
+catalyst may still be real but poorly covered (common for small/illiquid tickers). In that case, base
+your catalyst determination on the price/volume action itself (the size and character of the move is
+itself evidence something happened), say explicitly in catalyst_description that no corroborating news
+was found, and reflect that uncertainty by lowering rank/ep_score rather than defaulting to SKIP purely
+for lack of a news headline.
+
 Always respond in valid JSON only. No markdown, no explanation outside JSON. The JSON must match this exact shape:
 {
   "catalyst_type": "#N — Name",
@@ -139,17 +157,23 @@ async def massive_get(client: httpx.AsyncClient, path: str, params: dict) -> dic
     return r.json()
 
 
-async def validate_ticker(client: httpx.AsyncClient, ticker: str) -> bool:
+async def fetch_ticker_details(client: httpx.AsyncClient, ticker: str) -> dict:
+    """Also used to get the company's full name for the web-search news fallback -- it's called
+    unconditionally (not just when the day's bar comes back empty), so this is the single source
+    of truth for both ticker validity and company_name."""
     try:
         r = await client.get(
             f"{MASSIVE_BASE_URL}/v3/reference/tickers/{ticker}", params={"apiKey": MASSIVE_API_KEY}
         )
         if r.status_code == 404:
-            return False
+            return {"valid": False, "name": None}
         r.raise_for_status()
-        return bool(r.json().get("results"))
+        results = r.json().get("results")
+        if not results:
+            return {"valid": False, "name": None}
+        return {"valid": True, "name": results.get("name")}
     except httpx.HTTPStatusError:
-        return False
+        return {"valid": False, "name": None}
 
 
 async def fetch_daily_bar(client: httpx.AsyncClient, ticker: str, date_str: str) -> Optional[dict]:
@@ -172,28 +196,6 @@ async def fetch_lookback_bars(client: httpx.AsyncClient, ticker: str, before_dat
         {"adjusted": "true", "sort": "asc", "limit": 120},
     )
     return data.get("results") or []
-
-
-async def fetch_news(client: httpx.AsyncClient, ticker: str, date_str: str) -> list[dict]:
-    data = await massive_get(
-        client,
-        "/v2/reference/news",
-        {
-            "ticker": ticker,
-            "published_utc.gte": f"{date_str}T00:00:00Z",
-            "published_utc.lte": f"{date_str}T23:59:59Z",
-            "limit": 10,
-        },
-    )
-    articles = data.get("results") or []
-    return [
-        {
-            "title": a.get("title"),
-            "description": a.get("description"),
-            "publisher": (a.get("publisher") or {}).get("name"),
-        }
-        for a in articles
-    ]
 
 
 async def fetch_indicator(client: httpx.AsyncClient, ticker: str, date_str: str, kind: str, window: int) -> Optional[float]:
@@ -235,12 +237,20 @@ async def analyze(req: AnalyzeRequest):
     date_str = req.date
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        today_bar = await fetch_daily_bar(client, ticker, date_str)
+        # Fetched together: ticker_details is needed both for the 404-vs-422 distinction below (if
+        # the day's bar is missing) and, when the ticker is valid, for its company_name -- required
+        # by the web-search news fallback regardless of whether the bar was found.
+        today_bar, ticker_details = await asyncio.gather(
+            fetch_daily_bar(client, ticker, date_str),
+            fetch_ticker_details(client, ticker),
+        )
 
         if not today_bar:
-            if not await validate_ticker(client, ticker):
+            if not ticker_details["valid"]:
                 raise HTTPException(status_code=404, detail="Ticker not found")
             raise HTTPException(status_code=422, detail="Market closed on this date")
+
+        company_name = ticker_details.get("name") or ticker
 
         lookback = await fetch_lookback_bars(client, ticker, date_str)
         if not lookback:
@@ -258,27 +268,31 @@ async def analyze(req: AnalyzeRequest):
         price_30d_ago = bars_before_30d[-1]["c"] if bars_before_30d else lookback[0]["c"]
         ytd_move_pct = (today_bar["c"] - price_30d_ago) / price_30d_ago * 100 if price_30d_ago else 0
 
-        news = await fetch_news(client, ticker, date_str)
+        news = await get_news(client, anthropic_client, ticker, company_name, date_str)
 
         ema21 = await fetch_indicator(client, ticker, date_str, "ema", 21)
         sma50 = await fetch_indicator(client, ticker, date_str, "sma", 50)
         above_21ema = today_bar["c"] > ema21 if ema21 is not None else None
         above_50sma = today_bar["c"] > sma50 if sma50 is not None else None
 
-    news_text = (
-        "\n".join(f"- {n['title']} ({n['publisher']})" for n in news)
-        if news
-        else "No news found for this date."
-    )
+    if news:
+        news_text = "\n".join(
+            f"- [{n.get('source_tier', 2)}] {n['title']} ({n.get('publisher') or 'unknown source'}, via {n.get('origin', 'massive')})"
+            for n in news
+        )
+    else:
+        news_text = "Search found no news via Massive. Web search also found nothing for this specific date. Find the real catalyst from the price/volume action before scoring -- see the CRITICAL instruction above about an empty news list."
 
     user_message = f"""Ticker: {ticker}
+Company: {company_name}
 Date: {date_str}
 Price change: {price_change_pct:.2f}%
 Volume: {int(today_bar['v']):,} ({volume_ratio:.2f}x average)
 Price vs 21EMA: {'above' if above_21ema else 'below' if above_21ema is not None else 'unknown'}
 Price vs 50SMA: {'above' if above_50sma else 'below' if above_50sma is not None else 'unknown'}
 Price 30 days ago: {ytd_move_pct:.2f}% change
-News headlines:
+News count: {len(news)}
+News headlines (format: [source_tier] title (publisher, origin)):
 {news_text}
 
 Analyze this EP setup and return JSON with the exact structure specified in your instructions."""
@@ -305,6 +319,7 @@ Analyze this EP setup and return JSON with the exact structure specified in your
 
     return {
         "ticker": ticker,
+        "company_name": company_name,
         "date": date_str,
         "price": {
             "open": today_bar["o"],
