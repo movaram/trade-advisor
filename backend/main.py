@@ -290,7 +290,12 @@ Analyze this EP setup and return JSON with the exact structure specified in your
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        analysis = extract_json(message.content[0].text)
+        # content[0] isn't reliably the text block -- e.g. a thinking block can come first --
+        # so pick out every text block instead of assuming position.
+        raw_text = "".join(block.text for block in message.content if block.type == "text")
+        if not raw_text:
+            raise HTTPException(status_code=502, detail="Claude returned no text content")
+        analysis = extract_json(raw_text)
     except json.JSONDecodeError:
         raise HTTPException(status_code=502, detail="Claude returned invalid JSON")
     except HTTPException:
