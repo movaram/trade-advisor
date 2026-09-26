@@ -13,7 +13,11 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY", "")
+# Polygon.io rebranded to Massive (massive.com) -- the REST paths are unchanged, but the API now
+# lives at api.massive.com (api.polygon.io still answers for legacy integrations, but the current
+# docs and new keys point at the new domain, so that's what this uses).
+MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
+MASSIVE_BASE_URL = "https://api.massive.com"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-sonnet-5"
 
@@ -120,17 +124,17 @@ Always respond in valid JSON only. No markdown, no explanation outside JSON. The
 """
 
 
-async def polygon_get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
-    if not POLYGON_API_KEY:
-        raise HTTPException(status_code=500, detail="POLYGON_API_KEY is not set in backend/.env")
+async def massive_get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
+    if not MASSIVE_API_KEY:
+        raise HTTPException(status_code=500, detail="MASSIVE_API_KEY is not set in backend/.env")
     try:
-        r = await client.get(f"https://api.polygon.io{path}", params={**params, "apiKey": POLYGON_API_KEY})
+        r = await client.get(f"{MASSIVE_BASE_URL}{path}", params={**params, "apiKey": MASSIVE_API_KEY})
     except httpx.RequestError:
-        raise HTTPException(status_code=502, detail="Could not reach Polygon.io — check your internet connection")
+        raise HTTPException(status_code=502, detail="Could not reach Massive (formerly Polygon.io) — check your internet connection")
     if r.status_code == 429:
-        raise HTTPException(status_code=429, detail="Polygon rate limit reached, try again shortly")
+        raise HTTPException(status_code=429, detail="Massive rate limit reached, try again shortly")
     if r.status_code == 401:
-        raise HTTPException(status_code=502, detail="Polygon API key rejected — check POLYGON_API_KEY in backend/.env")
+        raise HTTPException(status_code=502, detail="Massive API key rejected — check MASSIVE_API_KEY in backend/.env")
     r.raise_for_status()
     return r.json()
 
@@ -138,7 +142,7 @@ async def polygon_get(client: httpx.AsyncClient, path: str, params: dict) -> dic
 async def validate_ticker(client: httpx.AsyncClient, ticker: str) -> bool:
     try:
         r = await client.get(
-            f"https://api.polygon.io/v3/reference/tickers/{ticker}", params={"apiKey": POLYGON_API_KEY}
+            f"{MASSIVE_BASE_URL}/v3/reference/tickers/{ticker}", params={"apiKey": MASSIVE_API_KEY}
         )
         if r.status_code == 404:
             return False
@@ -149,7 +153,7 @@ async def validate_ticker(client: httpx.AsyncClient, ticker: str) -> bool:
 
 
 async def fetch_daily_bar(client: httpx.AsyncClient, ticker: str, date_str: str) -> Optional[dict]:
-    data = await polygon_get(
+    data = await massive_get(
         client, f"/v2/aggs/ticker/{ticker}/range/1/day/{date_str}/{date_str}", {"adjusted": "true"}
     )
     results = data.get("results") or []
@@ -162,7 +166,7 @@ async def fetch_lookback_bars(client: httpx.AsyncClient, ticker: str, before_dat
     before = date_cls.fromisoformat(before_date_str)
     start = before - timedelta(days=60)
     end = before - timedelta(days=1)
-    data = await polygon_get(
+    data = await massive_get(
         client,
         f"/v2/aggs/ticker/{ticker}/range/1/day/{start.isoformat()}/{end.isoformat()}",
         {"adjusted": "true", "sort": "asc", "limit": 120},
@@ -171,7 +175,7 @@ async def fetch_lookback_bars(client: httpx.AsyncClient, ticker: str, before_dat
 
 
 async def fetch_news(client: httpx.AsyncClient, ticker: str, date_str: str) -> list[dict]:
-    data = await polygon_get(
+    data = await massive_get(
         client,
         "/v2/reference/news",
         {
@@ -193,7 +197,7 @@ async def fetch_news(client: httpx.AsyncClient, ticker: str, date_str: str) -> l
 
 
 async def fetch_indicator(client: httpx.AsyncClient, ticker: str, date_str: str, kind: str, window: int) -> Optional[float]:
-    data = await polygon_get(
+    data = await massive_get(
         client,
         f"/v1/indicators/{kind}/{ticker}",
         {

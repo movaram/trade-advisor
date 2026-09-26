@@ -5,14 +5,15 @@ catalyst classification, EP checklist score, verdict (TRADE / WAIT / SKIP), and 
 
 - **Frontend** — Next.js 14 + Tailwind CSS (`/` — this repo's root)
 - **Backend** — Python FastAPI (`/backend`)
-- **Data** — Polygon.io (price, volume, technicals, news)
+- **Data** — Massive (formerly Polygon.io) — price, volume, technicals, news
 - **Analysis** — Claude API (`claude-sonnet-5`)
 
 ## 1. Get API keys
 
-### Polygon.io (free tier — 15-min delayed data, fine for analyzing past dates)
-1. Go to https://polygon.io/dashboard/signup and create a free account.
-2. Once logged in, your API key is on the dashboard home page — copy it.
+### Massive (free tier — 15-min delayed data, fine for analyzing past dates)
+Polygon.io rebranded to **Massive** — same company, same data, new name/domain.
+1. Go to https://massive.com/dashboard/signup and create a free account.
+2. Your API key is at https://massive.com/dashboard/keys — copy it.
 
 ### Anthropic (Claude API)
 This is **not** the same as your claude.ai subscription — Claude Pro/Max does not include API access.
@@ -20,7 +21,7 @@ You need a separate account with its own billing:
 1. Go to https://console.anthropic.com and sign up (or log in).
 2. Add a payment method under **Settings → Billing** (API usage is billed per token; a few dollars
    covers a lot of testing).
-3. Go to **API Keys** → **Create Key**, copy it.
+3. Go to **API Keys** → **Create Key**, copy it. Scope can stay "Default workspace".
 
 ## 2. Backend setup
 
@@ -34,7 +35,7 @@ cp .env.example .env
 
 Edit `backend/.env` and paste your two keys:
 ```
-POLYGON_API_KEY=your_polygon_key_here
+MASSIVE_API_KEY=your_massive_key_here
 ANTHROPIC_API_KEY=your_anthropic_key_here
 ```
 
@@ -60,7 +61,7 @@ Open http://localhost:3000 — the frontend calls the backend at the URL in `.en
 ### Backend → Railway
 1. Go to https://railway.app, sign up, **New Project → Deploy from GitHub repo**, pick this repo.
 2. Set the service's **Root Directory** to `backend`.
-3. Under **Variables**, add `POLYGON_API_KEY` and `ANTHROPIC_API_KEY` (same values as your local `.env`).
+3. Under **Variables**, add `MASSIVE_API_KEY` and `ANTHROPIC_API_KEY` (same values as your local `.env`).
 4. Railway auto-detects the Python app; if it asks for a start command, use:
    `uvicorn main:app --host 0.0.0.0 --port $PORT`
 5. Once deployed, copy the public URL Railway gives the service (something like
@@ -78,10 +79,13 @@ The backend returns a clear message for each of these:
 - **Weekend/holiday** (no trading data for that date) → "Market closed on this date"
 - **Invalid ticker** → "Ticker not found"
 - **No news found** → analysis still runs on price/volume data alone
-- **Polygon rate limit** → "Polygon rate limit reached, try again shortly"
+- **Massive rate limit** → "Massive rate limit reached, try again shortly"
+- **Bad/missing API key** → names exactly which env var to check
 
 ## Notes
 
 - No auth, no database — stateless by design, matching the brief.
 - Desktop only, no mobile layout was built.
 - All Claude-generated explanations are in Russian; UI labels are in English.
+- Massive's REST paths are identical to Polygon.io's old ones (`/v2/aggs/...`, `/v2/reference/news`,
+  `/v1/indicators/...`) — only the domain changed, from `api.polygon.io` to `api.massive.com`.
