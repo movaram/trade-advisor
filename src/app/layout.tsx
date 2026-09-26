@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Trade Advisor',
-  description: 'Swing trading research tool — fundamentals, filings, catalysts',
+  title: 'EP Analyzer',
+  description: 'Episodic Pivot Catalyst Intelligence',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
