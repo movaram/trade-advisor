@@ -95,10 +95,11 @@ Q3: Is catalyst BETTER than expected?
 Q4: Is there a narrative for new buyers?
 Q5: Technically above key MAs or breaking out?
 
-VERDICT RULES:
-- Score 4-5: TRADE ✅
-- Score 2-3: WAIT ⚠️
-- Score 0-1: SKIP ❌
+VERDICT RULES (apply to the final ep_score, after any analyst-confirmation boost below --
+thresholds are continuous, not integer buckets, since the boost can produce a .5 value):
+- ep_score >= 4: TRADE ✅
+- 2 <= ep_score < 4: WAIT ⚠️
+- ep_score < 2: SKIP ❌
 
 NEWS SOURCE PRIORITY (weigh confidence accordingly, note it in catalyst_description if it matters):
 TIER 1 (highest confidence — official/regulatory): businesswire, prnewswire, globenewswire, sec.gov
@@ -106,6 +107,25 @@ TIER 2 (high confidence — major wire/financial press): reuters, bloomberg, ft.
 TIER 3 (lower confidence — commentary/opinion, verify claims before treating as fact): motleyfool, seekingalpha
 Each news item you're given includes its source_tier (1/2/3) and origin (massive = structured news
 feed, web_search = live web search fallback). Prefer tier-1/2 sources when they disagree with tier-3.
+
+ANALYST ACTION SCORING — apply this whenever the news contains analyst upgrades/downgrades or price
+target (PT) changes; if there's no analyst activity in the news, skip this section and set
+checklist.analyst_confirmation to null.
+1. COUNT how many distinct analysts/firms acted on the same day as the primary catalyst.
+   1 analyst = weak signal. 3+ analysts acting the same day = strong confirmation.
+2. TIER the analyst firms:
+   TIER 1: Goldman Sachs, Morgan Stanley, JPMorgan, UBS, Barclays, Bank of America
+   TIER 2: Oppenheimer, Needham, Canaccord, RBC, Piper Sandler
+   TIER 3: small boutiques or firms not in the above lists
+3. MEASURE the magnitude of each PT raise (% change from old PT to new PT) and classify the largest one:
+   >50% = very strong, 25-50% = strong, 10-25% = moderate, <10% = noise
+4. Populate checklist.analyst_confirmation with:
+   {"analyst_count": <int>, "highest_tier": "T1"|"T2"|"T3", "max_pt_raise_pct": <number>,
+    "summary": "X analysts, highest tier: T1/T2/T3, max PT raise: +X%"}
+5. If at least one Tier-1 analyst raised its PT by more than 25% on the same day as the primary
+   catalyst, add exactly 0.5 to ep_score (on top of the 0-5 from the checklist below) before applying
+   the verdict rules above. Do not apply this boost more than once regardless of how many Tier-1
+   analysts qualify.
 
 CRITICAL — if the news list you're given is EMPTY, this does NOT mean there was no catalyst. It means
 neither the structured news feed nor a web search surfaced anything for this specific date -- the
@@ -131,7 +151,13 @@ Always respond in valid JSON only. No markdown, no explanation outside JSON. The
     "q4_narrative": true,
     "q4_explanation": "...",
     "q5_technical": true,
-    "q5_explanation": "..."
+    "q5_explanation": "...",
+    "analyst_confirmation": {
+      "analyst_count": 3,
+      "highest_tier": "T1",
+      "max_pt_raise_pct": 45.5,
+      "summary": "3 analysts, highest tier: T1, max PT raise: +45.5%"
+    }
   },
   "ep_score": 5,
   "verdict": "TRADE",
@@ -139,6 +165,9 @@ Always respond in valid JSON only. No markdown, no explanation outside JSON. The
   "key_risks": ["risk1", "risk2"],
   "similar_setups": ["AEHR 3/31/26", "FLEX 5/5/26"]
 }
+checklist.analyst_confirmation is null when there's no analyst upgrade/PT-raise activity in the news --
+don't fabricate one. ep_score is normally an integer 0-5, but becomes X.5 when the analyst-confirmation
+boost applies.
 """
 
 

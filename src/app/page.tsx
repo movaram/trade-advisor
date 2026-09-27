@@ -7,12 +7,20 @@ import Toast from '@/components/Toast'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+type AnalystConfirmation = {
+  analyst_count: number
+  highest_tier: 'T1' | 'T2' | 'T3'
+  max_pt_raise_pct: number
+  summary: string
+}
+
 type Checklist = {
   q1_ignored: boolean; q1_explanation: string
   q2_volume: boolean; q2_explanation: string
   q3_better_than_expected: boolean; q3_explanation: string
   q4_narrative: boolean; q4_explanation: string
   q5_technical: boolean; q5_explanation: string
+  analyst_confirmation: AnalystConfirmation | null
 }
 
 type Analysis = {
@@ -77,6 +85,12 @@ const verdictStyles: Record<string, { bg: string; border: string; text: string; 
 }
 
 const tierLabel: Record<number, string> = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' }
+
+const tierBadge: Record<string, string> = {
+  T1: 'bg-amber-950 border-amber-600 text-amber-300',
+  T2: 'bg-gray-800 border-gray-500 text-gray-300',
+  T3: 'bg-gray-900 border-gray-700 text-gray-500',
+}
 
 function ChecklistRow({ label, pass, explanation }: { label: string; pass: boolean; explanation: string }) {
   return (
@@ -284,6 +298,16 @@ export default function Home() {
                   <ChecklistRow label="Q3: Better than expected" pass={result.analysis.checklist.q3_better_than_expected} explanation={result.analysis.checklist.q3_explanation} />
                   <ChecklistRow label="Q4: Narrative for new buyers" pass={result.analysis.checklist.q4_narrative} explanation={result.analysis.checklist.q4_explanation} />
                   <ChecklistRow label="Q5: Technical position" pass={result.analysis.checklist.q5_technical} explanation={result.analysis.checklist.q5_explanation} />
+                  {result.analysis.checklist.analyst_confirmation && (
+                    <div className="mt-3 pt-3 border-t border-gray-800 flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-xs uppercase tracking-wide text-gray-500">Analyst Confirmation:</span>
+                      <span className="font-semibold text-white">{result.analysis.checklist.analyst_confirmation.analyst_count} analysts</span>
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${tierBadge[result.analysis.checklist.analyst_confirmation.highest_tier] || tierBadge.T3}`}>
+                        {result.analysis.checklist.analyst_confirmation.highest_tier}
+                      </span>
+                      <span className="text-green-400 font-semibold">max PT +{result.analysis.checklist.analyst_confirmation.max_pt_raise_pct}%</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Card 4 — Verdict */}
