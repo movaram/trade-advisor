@@ -6,6 +6,11 @@ const MAX_ENTRIES = 200
 
 export type Verdict = 'TRADE' | 'WAIT' | 'SKIP'
 
+export type VerdictStrength =
+  | 'STRONG TRADE' | 'TRADE' | 'TRADE WITH CAUTION'
+  | 'WAIT - STRONG CATALYST' | 'WAIT'
+  | 'SKIP' | 'SKIP - WEAK CATALYST'
+
 export type HistoryEntry = {
   id: string
   ticker: string
@@ -17,6 +22,11 @@ export type HistoryEntry = {
   rank: number
   ep_score: number
   verdict: Verdict
+  // Optional: entries saved before the Catalyst Strength feature won't have these.
+  catalyst_strength?: number
+  catalyst_strength_label?: string
+  combined_score?: number
+  verdict_strength?: VerdictStrength
   price_change: number
   volume_ratio: number
   full_result: any

@@ -1,6 +1,6 @@
 'use client'
 import { useMemo, useState } from 'react'
-import type { HistoryEntry, Verdict } from '@/hooks/useHistory'
+import type { HistoryEntry, Verdict, VerdictStrength } from '@/hooks/useHistory'
 
 function rankColor(rank: number) {
   if (rank >= 8) return 'text-green-400'
@@ -14,6 +14,24 @@ const verdictBadge: Record<Verdict, string> = {
   SKIP: 'bg-red-950 border-red-600 text-red-400',
 }
 
+const verdictStrengthBadge: Record<VerdictStrength, string> = {
+  'STRONG TRADE': 'bg-green-950 border-green-500 text-green-300',
+  'TRADE': 'bg-green-950 border-green-600 text-green-400',
+  'TRADE WITH CAUTION': 'bg-teal-950 border-teal-600 text-teal-400',
+  'WAIT - STRONG CATALYST': 'bg-yellow-950 border-yellow-500 text-yellow-300',
+  'WAIT': 'bg-yellow-950 border-yellow-600 text-yellow-400',
+  'SKIP': 'bg-red-950 border-red-600 text-red-400',
+  'SKIP - WEAK CATALYST': 'bg-red-950 border-red-800 text-red-500',
+}
+
+const strengthLabelColor: Record<string, string> = {
+  Exceptional: 'text-green-400',
+  Strong: 'text-green-400',
+  Moderate: 'text-yellow-400',
+  Weak: 'text-orange-400',
+  Noise: 'text-red-400',
+}
+
 function ScoreDots({ score }: { score: number }) {
   return (
     <span className="tracking-wider text-gray-500" title={`${score}/5`}>
@@ -23,7 +41,7 @@ function ScoreDots({ score }: { score: number }) {
 }
 
 function toCsv(rows: HistoryEntry[]): string {
-  const header = ['Ticker', 'EventDate', 'Catalyst#', 'CatalystName', 'Rank', 'EPScore', 'Verdict', 'PriceChange%', 'VolumeRatio']
+  const header = ['Ticker', 'EventDate', 'Catalyst#', 'CatalystName', 'Rank', 'EPScore', 'CatalystStrength', 'CombinedScore', 'Verdict', 'PriceChange%', 'VolumeRatio']
   const escape = (v: any) => {
     const s = String(v ?? '')
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -33,7 +51,8 @@ function toCsv(rows: HistoryEntry[]): string {
   for (const e of rows) {
     lines.push([
       escape(e.ticker), escape(e.event_date), escape(e.catalyst_number ?? ''), escape(catalystName(e)),
-      escape(e.rank), escape(e.ep_score), escape(e.verdict), escape(e.price_change), escape(e.volume_ratio),
+      escape(e.rank), escape(e.ep_score), escape(e.catalyst_strength ?? ''), escape(e.combined_score ?? ''),
+      escape(e.verdict_strength ?? e.verdict), escape(e.price_change), escape(e.volume_ratio),
     ].join(','))
   }
   return lines.join('\n')
@@ -160,7 +179,7 @@ export default function HistoryTable({
 
       <div className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[720px]">
+          <table className="w-full text-sm min-w-[920px]">
             <thead>
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wide text-gray-500">
                 <th className="px-4 py-3 font-medium">Ticker</th>
@@ -168,6 +187,8 @@ export default function HistoryTable({
                 <th className="px-4 py-3 font-medium">Catalyst</th>
                 <th className="px-4 py-3 font-medium">Rank</th>
                 <th className="px-4 py-3 font-medium">EP Score</th>
+                <th className="px-4 py-3 font-medium">CS</th>
+                <th className="px-4 py-3 font-medium">Combined</th>
                 <th className="px-4 py-3 font-medium">Verdict</th>
                 <th className="px-4 py-3 font-medium">Actions</th>
               </tr>
@@ -185,9 +206,23 @@ export default function HistoryTable({
                   <td className={`px-4 py-3 font-semibold ${rankColor(e.rank)}`}>{e.rank}</td>
                   <td className="px-4 py-3"><ScoreDots score={e.ep_score} /></td>
                   <td className="px-4 py-3">
-                    <span className={`inline-block border text-xs font-semibold px-2 py-0.5 rounded-full ${verdictBadge[e.verdict] || verdictBadge.WAIT}`}>
-                      {e.verdict}
-                    </span>
+                    {e.catalyst_strength != null ? (
+                      <span className={`font-semibold ${strengthLabelColor[e.catalyst_strength_label || ''] || 'text-gray-400'}`}>
+                        {e.catalyst_strength}/15
+                      </span>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-gray-300">{e.combined_score != null ? `${e.combined_score}/20` : <span className="text-gray-600">—</span>}</td>
+                  <td className="px-4 py-3">
+                    {e.verdict_strength ? (
+                      <span className={`inline-block border text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${verdictStrengthBadge[e.verdict_strength] || verdictStrengthBadge.WAIT}`}>
+                        {e.verdict_strength}
+                      </span>
+                    ) : (
+                      <span className={`inline-block border text-xs font-semibold px-2 py-0.5 rounded-full ${verdictBadge[e.verdict] || verdictBadge.WAIT}`}>
+                        {e.verdict}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     <button onClick={() => onView(e)} className="text-blue-400 hover:text-blue-300 text-xs font-medium mr-3">View</button>

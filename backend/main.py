@@ -127,6 +127,60 @@ checklist.analyst_confirmation to null.
    the verdict rules above. Do not apply this boost more than once regardless of how many Tier-1
    analysts qualify.
 
+CATALYST STRENGTH SCORING — separate from the EP checklist above, score these 5 dimensions
+(0-3 points each, 15 max total) to measure how substantial the catalyst itself is:
+
+1. SOURCE QUALITY (0-3):
+   3 = Primary source: 8-K filing, GlobeNewswire, BusinessWire, PRNewswire, company IR page
+   2 = Tier-2 media: Reuters, Bloomberg, FT, WSJ, CNBC
+   1 = Tier-3: Motley Fool, SeekingAlpha, Zacks, StockAnalysis
+   0 = No source found / unverifiable
+
+2. SPECIFICITY (0-3):
+   3 = Named counterparty + specific $ amount (e.g. "$41M order from Amazon")
+   2 = Named counterparty, no $ amount (e.g. "Contract with Google")
+   1 = Unnamed partner, vague terms (e.g. "Major hyperscaler partnership")
+   0 = No counterparty, pure narrative
+
+3. MAGNITUDE (0-3):
+   For an earnings catalyst, score by EPS beat vs. consensus:
+     3 = beat >50%, 2 = beat 25-50%, 1 = beat 10-25%, 0 = beat <10% or a miss
+   For a non-earnings catalyst, score by estimated value relative to market cap:
+     3 = transformational (>20% of market cap), 2 = significant (10-20%),
+     1 = moderate (<10%), 0 = immaterial/symbolic
+
+4. ANALYST CONFIRMATION (0-3) — same underlying facts as checklist.analyst_confirmation above,
+   scored on this different scale for this dimension specifically:
+   3 = 3+ analysts raised PT same day, at least one Tier-1
+       (Goldman Sachs, Morgan Stanley, JPMorgan, UBS, Barclays, Bank of America)
+   2 = 1-2 Tier-1 analysts OR 3+ Tier-2 analysts
+       (Oppenheimer, Needham, RBC, Canaccord, Piper Sandler, William Blair)
+   1 = only Tier-3 analysts / boutiques
+   0 = no analyst action
+
+5. NOVELTY (0-3):
+   3 = completely new information, market had no prior knowledge
+   2 = confirms rumors/expectations but with better-than-expected details
+   1 = known story, minor update
+   0 = already fully priced in
+
+STRENGTH LABELS (by total 0-15): 13-15 "Exceptional", 10-12 "Strong", 7-9 "Moderate",
+4-6 "Weak", 0-3 "Noise". label_color: Exceptional/Strong = green, Moderate = yellow,
+Weak = orange, Noise = red.
+
+COMBINED VERDICT (verdict_strength) — evaluate in this exact order (first match wins):
+1. If ep_score < 2: verdict_strength = "SKIP" (regardless of catalyst_strength.total)
+2. Else if catalyst_strength.total <= 3: verdict_strength = "SKIP - WEAK CATALYST"
+   (regardless of ep_score -- a genuinely weak catalyst caps the call even with a good checklist)
+3. Else, cross ep_score (">=4" or "2-4") against catalyst_strength.total ("10-15", "7-9", "4-6"):
+   - ep>=4 + cat>=10   -> "STRONG TRADE"
+   - ep>=4 + cat 7-9   -> "TRADE"
+   - ep>=4 + cat 4-6   -> "TRADE WITH CAUTION"
+   - ep 2-4 + cat>=10  -> "WAIT - STRONG CATALYST"
+   - ep 2-4 + cat 7-9  -> "WAIT"
+   - ep 2-4 + cat 4-6  -> "WAIT"
+combined_score.total = catalyst_strength.total + ep_score (max 20).
+
 CRITICAL — if the news list you're given is EMPTY, this does NOT mean there was no catalyst. It means
 neither the structured news feed nor a web search surfaced anything for this specific date -- the
 catalyst may still be real but poorly covered (common for small/illiquid tickers). In that case, base
@@ -163,11 +217,35 @@ Always respond in valid JSON only. No markdown, no explanation outside JSON. The
   "verdict": "TRADE",
   "verdict_color": "green",
   "key_risks": ["risk1", "risk2"],
-  "similar_setups": ["AEHR 3/31/26", "FLEX 5/5/26"]
+  "similar_setups": ["AEHR 3/31/26", "FLEX 5/5/26"],
+  "catalyst_strength": {
+    "dimensions": {
+      "source_quality": 3,
+      "source_quality_explanation": "... in Russian",
+      "specificity": 2,
+      "specificity_explanation": "... in Russian",
+      "magnitude": 3,
+      "magnitude_explanation": "... in Russian",
+      "analyst_confirmation": 2,
+      "analyst_confirmation_explanation": "... in Russian",
+      "novelty": 3,
+      "novelty_explanation": "... in Russian"
+    },
+    "total": 13,
+    "label": "Exceptional",
+    "label_color": "green"
+  },
+  "combined_score": {
+    "total": 18,
+    "verdict_strength": "STRONG TRADE"
+  }
 }
 checklist.analyst_confirmation is null when there's no analyst upgrade/PT-raise activity in the news --
 don't fabricate one. ep_score is normally an integer 0-5, but becomes X.5 when the analyst-confirmation
-boost applies.
+boost applies. catalyst_strength.dimensions.analyst_confirmation is a SEPARATE 0-3 scale from
+checklist.analyst_confirmation -- both describe the same underlying analyst activity but for different
+purposes (checklist tracks the raw facts for the EP boost; catalyst_strength scores how much that
+activity strengthens the catalyst itself), so score them independently and don't force them to agree.
 """
 
 
@@ -329,7 +407,7 @@ Analyze this EP setup and return JSON with the exact structure specified in your
     try:
         message = await anthropic_client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=2000,
+            max_tokens=3500,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )

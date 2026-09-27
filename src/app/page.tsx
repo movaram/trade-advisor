@@ -23,6 +23,33 @@ type Checklist = {
   analyst_confirmation: AnalystConfirmation | null
 }
 
+type CatalystStrengthDimensions = {
+  source_quality: number; source_quality_explanation: string
+  specificity: number; specificity_explanation: string
+  magnitude: number; magnitude_explanation: string
+  analyst_confirmation: number; analyst_confirmation_explanation: string
+  novelty: number; novelty_explanation: string
+}
+
+type CatalystStrengthLabel = 'Exceptional' | 'Strong' | 'Moderate' | 'Weak' | 'Noise'
+
+type CatalystStrength = {
+  dimensions: CatalystStrengthDimensions
+  total: number
+  label: CatalystStrengthLabel
+  label_color: string
+}
+
+export type VerdictStrength =
+  | 'STRONG TRADE' | 'TRADE' | 'TRADE WITH CAUTION'
+  | 'WAIT - STRONG CATALYST' | 'WAIT'
+  | 'SKIP' | 'SKIP - WEAK CATALYST'
+
+type CombinedScore = {
+  total: number
+  verdict_strength: VerdictStrength
+}
+
 type Analysis = {
   catalyst_type: string
   catalyst_description: string
@@ -34,6 +61,8 @@ type Analysis = {
   verdict_color: string
   key_risks: string[]
   similar_setups: string[]
+  catalyst_strength: CatalystStrength
+  combined_score: CombinedScore
 }
 
 type NewsItem = {
@@ -78,10 +107,49 @@ function toDDMMYYYY(isoDate: string): string {
   return `${d}.${m}.${y}`
 }
 
-const verdictStyles: Record<string, { bg: string; border: string; text: string; emoji: string }> = {
-  TRADE: { bg: 'bg-green-950', border: 'border-green-600', text: 'text-green-400', emoji: '✅' },
-  WAIT: { bg: 'bg-yellow-950', border: 'border-yellow-600', text: 'text-yellow-400', emoji: '⚠️' },
-  SKIP: { bg: 'bg-red-950', border: 'border-red-600', text: 'text-red-400', emoji: '❌' },
+const verdictStrengthStyles: Record<VerdictStrength, { bg: string; border: string; text: string; emoji: string }> = {
+  'STRONG TRADE': { bg: 'bg-green-950', border: 'border-green-500', text: 'text-green-300', emoji: '✅✅' },
+  'TRADE': { bg: 'bg-green-950', border: 'border-green-600', text: 'text-green-400', emoji: '✅' },
+  'TRADE WITH CAUTION': { bg: 'bg-teal-950', border: 'border-teal-600', text: 'text-teal-400', emoji: '✅⚠️' },
+  'WAIT - STRONG CATALYST': { bg: 'bg-yellow-950', border: 'border-yellow-500', text: 'text-yellow-300', emoji: '⏳' },
+  'WAIT': { bg: 'bg-yellow-950', border: 'border-yellow-600', text: 'text-yellow-400', emoji: '⚠️' },
+  'SKIP': { bg: 'bg-red-950', border: 'border-red-600', text: 'text-red-400', emoji: '❌' },
+  'SKIP - WEAK CATALYST': { bg: 'bg-red-950', border: 'border-red-800', text: 'text-red-500', emoji: '❌❌' },
+}
+
+const strengthLabelColor: Record<string, string> = {
+  green: 'text-green-400',
+  yellow: 'text-yellow-400',
+  orange: 'text-orange-400',
+  red: 'text-red-400',
+}
+
+const strengthBarColor: Record<string, string> = {
+  green: 'bg-green-500',
+  yellow: 'bg-yellow-500',
+  orange: 'bg-orange-500',
+  red: 'bg-red-500',
+}
+
+function dimensionDots(score: number) {
+  const color = score === 3 ? 'text-green-400' : score === 2 ? 'text-yellow-400' : score === 1 ? 'text-orange-400' : 'text-red-400'
+  return (
+    <span className={`tracking-wider ${color}`} title={`${score}/3`}>
+      {Array.from({ length: 3 }, (_, i) => (i < score ? '●' : '○')).join('')}
+    </span>
+  )
+}
+
+function DimensionRow({ label, score, explanation }: { label: string; score: number; explanation: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-2 border-b border-gray-800 last:border-0">
+      <div>
+        <div className="text-sm font-medium text-gray-200">{label}</div>
+        <div className="text-xs text-gray-500 mt-0.5">{explanation}</div>
+      </div>
+      <div className="shrink-0 pt-0.5">{dimensionDots(score)}</div>
+    </div>
+  )
 }
 
 const tierLabel: Record<number, string> = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' }
@@ -128,6 +196,10 @@ export default function Home() {
       rank: data.analysis.rank,
       ep_score: data.analysis.ep_score,
       verdict: data.analysis.verdict,
+      catalyst_strength: data.analysis.catalyst_strength.total,
+      catalyst_strength_label: data.analysis.catalyst_strength.label,
+      combined_score: data.analysis.combined_score.total,
+      verdict_strength: data.analysis.combined_score.verdict_strength,
       price_change: data.price_change_pct,
       volume_ratio: data.volume_ratio,
       full_result: data,
@@ -176,7 +248,7 @@ export default function Home() {
     setTab('analyze')
   }
 
-  const v = result ? verdictStyles[result.analysis.verdict] || verdictStyles.WAIT : null
+  const v = result ? verdictStrengthStyles[result.analysis.combined_score.verdict_strength] || verdictStrengthStyles.WAIT : null
 
   return (
     <main className="min-h-screen bg-[#0a0e14] text-gray-100">
@@ -259,6 +331,27 @@ export default function Home() {
                   <p className="text-xs text-gray-500 mt-3">{result.analysis.rank_explanation}</p>
                 </div>
 
+                {/* Card 1.5 — Catalyst Strength */}
+                <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-xs uppercase tracking-wide text-gray-500">Catalyst Strength</h2>
+                    <div className={`text-sm font-bold ${strengthLabelColor[result.analysis.catalyst_strength.label_color] || 'text-gray-400'}`}>
+                      {result.analysis.catalyst_strength.total}/15 · {result.analysis.catalyst_strength.label}
+                    </div>
+                  </div>
+                  <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mb-3">
+                    <div
+                      className={`h-full rounded-full ${strengthBarColor[result.analysis.catalyst_strength.label_color] || 'bg-gray-500'}`}
+                      style={{ width: `${(result.analysis.catalyst_strength.total / 15) * 100}%` }}
+                    />
+                  </div>
+                  <DimensionRow label="Source Quality" score={result.analysis.catalyst_strength.dimensions.source_quality} explanation={result.analysis.catalyst_strength.dimensions.source_quality_explanation} />
+                  <DimensionRow label="Specificity" score={result.analysis.catalyst_strength.dimensions.specificity} explanation={result.analysis.catalyst_strength.dimensions.specificity_explanation} />
+                  <DimensionRow label="Magnitude" score={result.analysis.catalyst_strength.dimensions.magnitude} explanation={result.analysis.catalyst_strength.dimensions.magnitude_explanation} />
+                  <DimensionRow label="Analyst Confirmation" score={result.analysis.catalyst_strength.dimensions.analyst_confirmation} explanation={result.analysis.catalyst_strength.dimensions.analyst_confirmation_explanation} />
+                  <DimensionRow label="Novelty" score={result.analysis.catalyst_strength.dimensions.novelty} explanation={result.analysis.catalyst_strength.dimensions.novelty_explanation} />
+                </div>
+
                 {/* Card 2 — Price Action */}
                 <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
                   <h2 className="text-xs uppercase tracking-wide text-gray-500 mb-3">Price Action</h2>
@@ -313,8 +406,31 @@ export default function Home() {
                 {/* Card 4 — Verdict */}
                 {v && (
                   <div className={`${v.bg} border ${v.border} rounded-xl p-6 text-center`}>
-                    <div className={`text-3xl font-bold ${v.text} mb-1`}>{v.emoji} {result.analysis.verdict}</div>
-                    <div className="text-sm text-gray-400 mb-4">Score: {result.analysis.ep_score}/5</div>
+                    <div className={`text-3xl font-bold ${v.text} mb-1`}>{v.emoji} {result.analysis.combined_score.verdict_strength}</div>
+                    <div className="text-sm text-gray-400 mb-4">Combined Score: {result.analysis.combined_score.total}/20</div>
+                    <div className="max-w-sm mx-auto space-y-3 text-left">
+                      <div>
+                        <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                          <span>Catalyst Strength</span>
+                          <span>{result.analysis.catalyst_strength.total}/15</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${strengthBarColor[result.analysis.catalyst_strength.label_color] || 'bg-gray-500'}`}
+                            style={{ width: `${(result.analysis.catalyst_strength.total / 15) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                          <span>EP Score</span>
+                          <span>{result.analysis.ep_score}/5</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full bg-blue-500" style={{ width: `${(result.analysis.ep_score / 5) * 100}%` }} />
+                        </div>
+                      </div>
+                    </div>
                     {result.analysis.key_risks?.length > 0 && (
                       <div className="text-left max-w-md mx-auto mt-4 pt-4 border-t border-gray-800/60">
                         <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Key Risks</div>
