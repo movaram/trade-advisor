@@ -7,12 +7,14 @@ Always respond in Russian. Code and variable names in English.
 
 ## Tech Stack
 - Frontend: Next.js 14 (App Router) + Tailwind CSS, deployed on Vercel
-- Backend: Python FastAPI, deployed on Railway
+- Backend: Python FastAPI in backend/, deployed on Vercel as a Python function in the SAME project
+  (api/index.py imports backend/main.py's app; vercel.json rewrites /api/* to it, maxDuration 150)
 - Data: Massive, formerly Polygon.io (price/volume/technicals/news) — same company/data/REST paths,
   rebranded; API domain is api.massive.com (api.polygon.io still answers but is the legacy domain)
 - Analysis: FREE ONLY — Google Gemini free tier (optional, GEMINI_API_KEY) with automatic fallback
   to a rule engine (backend/rules_analysis.py). Claude API was removed: user wants zero paid services
-- Deploy: Vercel (frontend, auto-deploy from GitHub push) + Railway (backend, separate service)
+- Deploy: Vercel only (frontend + backend, auto-deploy on push to main). Railway was never actually
+  deployed and is paid — don't reintroduce it
 - GitHub: movaram/trade-advisor
 
 ## Project Structure
@@ -21,10 +23,13 @@ Always respond in Russian. Code and variable names in English.
 /src/app/layout.tsx — root layout
 /src/app/globals.css — Tailwind directives + base dark theme
 /backend/main.py — FastAPI app, single POST /analyze endpoint
-/backend/requirements.txt — Python deps
+/requirements.txt — Python deps (root, where Vercel looks); backend/requirements.txt just includes it
+/api/index.py — Vercel entrypoint for the backend
+/vercel.json — /api/* rewrite + function maxDuration/excludeFiles
 /backend/.env — MASSIVE_API_KEY, FINNHUB_API_KEY, GEMINI_API_KEY (optional), GEMINI_MODEL (optional
   override; otherwise newest gemini-X-flash is auto-picked via ListModels) — never committed
-/.env.local — NEXT_PUBLIC_API_URL (frontend → backend URL)
+/.env.local — optional NEXT_PUBLIC_API_URL override. Default: '/api' in production (same Vercel site),
+  http://localhost:8000 in dev (run backend with: cd backend && .venv/bin/python -m uvicorn main:app --port 8000)
 
 ## How /analyze works (backend/main.py)
 1. Fetch the day's OHLCV bar from Massive for {ticker, date}
@@ -47,9 +52,10 @@ Always respond in Russian. Code and variable names in English.
 - No news found → still runs the analysis with price/volume data alone (not an error)
 
 ## Deployment workflow
-Claude Code делает git push напрямую (Vercel auto-deploys the frontend on push to main). Backend
-changes need a separate Railway deploy — Railway also auto-deploys from GitHub push if connected,
-but confirm with the user since it's a different service/dashboard than Vercel.
+Claude Code делает git push напрямую; Vercel auto-deploys both frontend and backend on push to main.
+Site: https://trade-advisor-inky.vercel.app. Backend keys (MASSIVE_API_KEY, FINNHUB_API_KEY,
+GEMINI_API_KEY) must be set in Vercel → Project → Settings → Environment Variables; changing them
+needs a Redeploy. FastAPI routes are registered at both /x and /api/x (local vs Vercel paths).
 
 ## Важные правила работы с пользователем
 - Пользователь НЕ программист — объяснять всё пошагово на русском
@@ -62,8 +68,8 @@ but confirm with the user since it's a different service/dashboard than Vercel.
 
 ## Ключевые технические решения
 - НИКАКИХ платных сервисов (явное требование пользователя): не добавлять Claude API, платный веб-поиск и т.п.
-- Ключи (MASSIVE_API_KEY, FINNHUB_API_KEY, GEMINI_API_KEY) живут только в backend/.env — никогда не в браузере,
-  никогда не в коммитах
+- Ключи (MASSIVE_API_KEY, FINNHUB_API_KEY, GEMINI_API_KEY) живут только в backend/.env (локально) и в
+  Environment Variables на Vercel — никогда не в браузере (не NEXT_PUBLIC_*), никогда не в коммитах
 - Frontend вызывает backend напрямую по NEXT_PUBLIC_API_URL (CORS открыт на бэкенде для этого)
 - Massive free tier ≈5 req/min: одна проверка уже делает ~6 запросов — не добавлять новые вызовы Massive;
   дополнительные данные брать из Finnhub (60/min)

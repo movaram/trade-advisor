@@ -6,22 +6,22 @@ catalyst classification, EP checklist score, verdict (TRADE / WAIT / SKIP), and 
 - **Frontend** — Next.js 14 + Tailwind CSS (`/` — this repo's root)
 - **Backend** — Python FastAPI (`/backend`)
 - **Data** — Massive (formerly Polygon.io) — price, volume, technicals, news
-- **Analysis** — Claude API (`claude-sonnet-5`)
+- **News** — Massive + Finnhub (both free)
+- **Analysis** — free only: Google Gemini free tier (optional) with automatic fallback to a
+  built-in rule engine (`backend/rules_analysis.py`). No paid services.
 
-## 1. Get API keys
+## 1. Get API keys (all free)
 
 ### Massive (free tier — 15-min delayed data, fine for analyzing past dates)
 Polygon.io rebranded to **Massive** — same company, same data, new name/domain.
 1. Go to https://massive.com/dashboard/signup and create a free account.
 2. Your API key is at https://massive.com/dashboard/keys — copy it.
 
-### Anthropic (Claude API)
-This is **not** the same as your claude.ai subscription — Claude Pro/Max does not include API access.
-You need a separate account with its own billing:
-1. Go to https://console.anthropic.com and sign up (or log in).
-2. Add a payment method under **Settings → Billing** (API usage is billed per token; a few dollars
-   covers a lot of testing).
-3. Go to **API Keys** → **Create Key**, copy it. Scope can stay "Default workspace".
+### Finnhub (free, ~1 year of company news)
+Sign up at https://finnhub.io and copy the API key from the dashboard.
+
+### Google Gemini (optional, free tier)
+At https://aistudio.google.com click **Get API key**. Without it, the rule engine does the analysis.
 
 ## 2. Backend setup
 
@@ -33,11 +33,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `backend/.env` and paste your two keys:
-```
-MASSIVE_API_KEY=your_massive_key_here
-ANTHROPIC_API_KEY=your_anthropic_key_here
-```
+Edit `backend/.env` and paste your keys (see `.env.example`).
 
 Run it:
 ```bash
@@ -56,22 +52,16 @@ npm run dev
 Open http://localhost:3000 — the frontend calls the backend at the URL in `.env.local`
 (`NEXT_PUBLIC_API_URL`, defaults to `http://localhost:8000`).
 
-## 4. Deploy
+## 4. Deploy (Vercel only, free)
 
-### Backend → Railway
-1. Go to https://railway.app, sign up, **New Project → Deploy from GitHub repo**, pick this repo.
-2. Set the service's **Root Directory** to `backend`.
-3. Under **Variables**, add `MASSIVE_API_KEY` and `ANTHROPIC_API_KEY` (same values as your local `.env`).
-4. Railway auto-detects the Python app; if it asks for a start command, use:
-   `uvicorn main:app --host 0.0.0.0 --port $PORT`
-5. Once deployed, copy the public URL Railway gives the service (something like
-   `https://your-app.up.railway.app`).
+Frontend and backend deploy together as one Vercel project: `api/index.py` runs the FastAPI app
+from `backend/` as a Python function, and `vercel.json` sends every `/api/*` request to it.
 
-### Frontend → Vercel
-1. This repo's root is already the Vercel project (same setup as before).
-2. In Vercel → **Project Settings → Environment Variables**, add:
-   `NEXT_PUBLIC_API_URL = https://your-app.up.railway.app` (the Railway URL from above).
-3. Push to `main` — Vercel redeploys automatically.
+1. In Vercel → **Project Settings → Environment Variables**, add `MASSIVE_API_KEY`,
+   `FINNHUB_API_KEY` and (optional) `GEMINI_API_KEY`, for Production and Preview.
+   Do **not** set `NEXT_PUBLIC_API_URL` — in production the site calls its own `/api`.
+2. Push to `main` — Vercel redeploys automatically. After changing a variable, use
+   **Deployments → ⋮ → Redeploy** so it takes effect.
 
 ## Error handling
 
@@ -86,6 +76,6 @@ The backend returns a clear message for each of these:
 
 - No auth, no database — stateless by design, matching the brief.
 - Desktop only, no mobile layout was built.
-- All Claude-generated explanations are in Russian; UI labels are in English.
+- Analysis explanations are in Russian; UI labels are in English.
 - Massive's REST paths are identical to Polygon.io's old ones (`/v2/aggs/...`, `/v2/reference/news`,
   `/v1/indicators/...`) — only the domain changed, from `api.polygon.io` to `api.massive.com`.

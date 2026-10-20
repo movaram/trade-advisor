@@ -9,7 +9,9 @@ import MomentumChecklist, { type MomentumChecklistData } from '@/components/Mome
 import FailedBreakout, { type FailedBreakoutData } from '@/components/FailedBreakout'
 import ActionPlan, { type ActionPlanData } from '@/components/ActionPlan'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// On Vercel the Python backend is served from the same site under /api (api/index.py); locally it
+// runs separately on port 8000. NEXT_PUBLIC_API_URL overrides both.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000')
 
 type AnalystConfirmation = {
   analyst_count: number

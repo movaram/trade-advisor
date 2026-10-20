@@ -7,7 +7,7 @@ from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -24,6 +24,10 @@ MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 MASSIVE_BASE_URL = "https://api.massive.com"
 
 app = FastAPI(title="EP Catalyst Analyzer")
+# Routes are registered under both "/" and "/api" (see the include_router calls at the bottom):
+# locally the frontend calls http://localhost:8000/analyze, while on Vercel the same app runs as
+# the api/index.py function and receives the public path /api/analyze.
+router = APIRouter()
 
 app.add_middleware(
     CORSMiddleware,
@@ -497,7 +501,7 @@ def compute_size(verdict_strength: str, market_cap: Optional[float], price: floa
     return base
 
 
-@app.post("/analyze")
+@router.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     ticker = req.ticker.upper().strip()
     date_str = req.date
@@ -679,6 +683,10 @@ action plan. Return JSON with the exact structure specified in your instructions
     }
 
 
-@app.get("/health")
+@router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+app.include_router(router)
+app.include_router(router, prefix="/api")
