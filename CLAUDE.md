@@ -10,7 +10,8 @@ Always respond in Russian. Code and variable names in English.
 - Backend: Python FastAPI, deployed on Railway
 - Data: Massive, formerly Polygon.io (price/volume/technicals/news) — same company/data/REST paths,
   rebranded; API domain is api.massive.com (api.polygon.io still answers but is the legacy domain)
-- Analysis: Claude API (model: claude-sonnet-5)
+- Analysis: FREE ONLY — Google Gemini free tier (optional, GEMINI_API_KEY) with automatic fallback
+  to a rule engine (backend/rules_analysis.py). Claude API was removed: user wants zero paid services
 - Deploy: Vercel (frontend, auto-deploy from GitHub push) + Railway (backend, separate service)
 - GitHub: movaram/trade-advisor
 
@@ -21,16 +22,21 @@ Always respond in Russian. Code and variable names in English.
 /src/app/globals.css — Tailwind directives + base dark theme
 /backend/main.py — FastAPI app, single POST /analyze endpoint
 /backend/requirements.txt — Python deps
-/backend/.env — MASSIVE_API_KEY, ANTHROPIC_API_KEY (never committed)
+/backend/.env — MASSIVE_API_KEY, FINNHUB_API_KEY, GEMINI_API_KEY (optional), GEMINI_MODEL (optional
+  override; otherwise newest gemini-X-flash is auto-picked via ListModels) — never committed
 /.env.local — NEXT_PUBLIC_API_URL (frontend → backend URL)
 
 ## How /analyze works (backend/main.py)
 1. Fetch the day's OHLCV bar from Massive for {ticker, date}
 2. Fetch ~60 calendar days of prior bars → derive 20-day avg volume, volume ratio, price 30 days ago
-3. Fetch news for that date from Massive's News API
+3. Fetch news (free sources only, no paid web search): Massive News for date-10..date (one
+   request — Massive free tier is ~5 req/min) + Finnhub company-news for date-10..date+3 (free, 60/min,
+   ~1 year history; skipped if FINNHUB_API_KEY unset). Deduped, sorted by date
 4. Fetch 21-day EMA and 50-day SMA from Massive's indicator endpoints
-5. Send all of the above to Claude (system prompt has the fixed 43-item catalyst list + EP checklist
-   rules + exact JSON response shape) and parse its JSON response
+5. If GEMINI_API_KEY is set, send all of the above to Gemini (SYSTEM_PROMPT has the 43-item catalyst
+   list + checklist rules + exact JSON shape). On no key / 429 / any error → rules_analysis.py builds
+   the same JSON shape from numbers + news keyword rules. Response carries analysis_source/analysis_note
+   Scores/verdict/size are always computed deterministically in main.py, never by the analyzer
 6. Return combined price/volume/news/analysis JSON to the frontend
 
 ## Error handling (already implemented, don't regress)
@@ -38,7 +44,7 @@ Always respond in Russian. Code and variable names in English.
 - No trading data + ticker doesn't resolve via Massive's ticker-details endpoint → 404 "Ticker not found"
 - Massive 429 → 429 "Massive rate limit reached, try again shortly"
 - Massive 401 → 502 naming exactly which env var to check (was a raw uncaught 500 before this was added)
-- No news found → still runs Claude with price/volume data alone (not an error)
+- No news found → still runs the analysis with price/volume data alone (not an error)
 
 ## Deployment workflow
 Claude Code делает git push напрямую (Vercel auto-deploys the frontend on push to main). Backend
@@ -55,11 +61,12 @@ but confirm with the user since it's a different service/dashboard than Vercel.
   отдельный ключ с отдельной оплатой по использованию. Всегда уточнять это, если пользователь путает.
 
 ## Ключевые технические решения
-- Ключи (MASSIVE_API_KEY, ANTHROPIC_API_KEY) живут только в backend/.env — никогда не в браузере,
+- НИКАКИХ платных сервисов (явное требование пользователя): не добавлять Claude API, платный веб-поиск и т.п.
+- Ключи (MASSIVE_API_KEY, FINNHUB_API_KEY, GEMINI_API_KEY) живут только в backend/.env — никогда не в браузере,
   никогда не в коммитах
 - Frontend вызывает backend напрямую по NEXT_PUBLIC_API_URL (CORS открыт на бэкенде для этого)
-- Модель Claude — claude-sonnet-5 (актуальная линейка на момент разработки; "claude-sonnet-4-6",
-  упомянутая в исходном ТЗ, не существует)
+- Massive free tier ≈5 req/min: одна проверка уже делает ~6 запросов — не добавлять новые вызовы Massive;
+  дополнительные данные брать из Finnhub (60/min)
 - No auth, no database — stateless by design
 - Desktop only, mobile layout не делался
 

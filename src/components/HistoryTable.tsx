@@ -1,6 +1,6 @@
 'use client'
 import { useMemo, useState } from 'react'
-import type { HistoryEntry, Verdict, VerdictStrength } from '@/hooks/useHistory'
+import type { HistoryEntry, Verdict, VerdictStrength, SetupType } from '@/hooks/useHistory'
 
 function rankColor(rank: number) {
   if (rank >= 8) return 'text-green-400'
@@ -32,6 +32,13 @@ const strengthLabelColor: Record<string, string> = {
   Noise: 'text-red-400',
 }
 
+const setupBadge: Record<SetupType, { cls: string; label: string }> = {
+  EP: { cls: 'bg-blue-950 border-blue-600 text-blue-300', label: 'EP' },
+  MOMENTUM: { cls: 'bg-purple-950 border-purple-600 text-purple-300', label: 'MOM' },
+  DEP: { cls: 'bg-orange-950 border-orange-600 text-orange-300', label: 'DEP' },
+  FAILED_BREAKOUT: { cls: 'bg-red-950 border-red-600 text-red-300', label: 'FAIL' },
+}
+
 function ScoreDots({ score }: { score: number }) {
   return (
     <span className="tracking-wider text-gray-500" title={`${score}/5`}>
@@ -41,7 +48,7 @@ function ScoreDots({ score }: { score: number }) {
 }
 
 function toCsv(rows: HistoryEntry[]): string {
-  const header = ['Ticker', 'EventDate', 'Catalyst#', 'CatalystName', 'Rank', 'EPScore', 'CatalystStrength', 'CombinedScore', 'Verdict', 'PriceChange%', 'VolumeRatio']
+  const header = ['Ticker', 'EventDate', 'SetupType', 'Catalyst#', 'CatalystName', 'Rank', 'SetupScore', 'CatalystStrength', 'CombinedScore', 'Verdict', 'PriceChange%', 'VolumeRatio']
   const escape = (v: any) => {
     const s = String(v ?? '')
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -50,7 +57,7 @@ function toCsv(rows: HistoryEntry[]): string {
   const lines = [header.join(',')]
   for (const e of rows) {
     lines.push([
-      escape(e.ticker), escape(e.event_date), escape(e.catalyst_number ?? ''), escape(catalystName(e)),
+      escape(e.ticker), escape(e.event_date), escape(e.setup_type ?? ''), escape(e.catalyst_number ?? ''), escape(catalystName(e)),
       escape(e.rank), escape(e.ep_score), escape(e.catalyst_strength ?? ''), escape(e.combined_score ?? ''),
       escape(e.verdict_strength ?? e.verdict), escape(e.price_change), escape(e.volume_ratio),
     ].join(','))
@@ -179,14 +186,15 @@ export default function HistoryTable({
 
       <div className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[920px]">
+          <table className="w-full text-sm min-w-[1010px]">
             <thead>
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wide text-gray-500">
                 <th className="px-4 py-3 font-medium">Ticker</th>
                 <th className="px-4 py-3 font-medium">Event Date</th>
+                <th className="px-4 py-3 font-medium">Setup</th>
                 <th className="px-4 py-3 font-medium">Catalyst</th>
                 <th className="px-4 py-3 font-medium">Rank</th>
-                <th className="px-4 py-3 font-medium">EP Score</th>
+                <th className="px-4 py-3 font-medium">Score</th>
                 <th className="px-4 py-3 font-medium">CS</th>
                 <th className="px-4 py-3 font-medium">Combined</th>
                 <th className="px-4 py-3 font-medium">Verdict</th>
@@ -198,6 +206,13 @@ export default function HistoryTable({
                 <tr key={e.id} className="border-b border-gray-800/60 last:border-0 hover:bg-gray-800/30">
                   <td className="px-4 py-3 font-bold text-white">{e.ticker}</td>
                   <td className="px-4 py-3 text-gray-400">{e.event_date}</td>
+                  <td className="px-4 py-3">
+                    {e.setup_type ? (
+                      <span className={`inline-block border text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${setupBadge[e.setup_type]?.cls || setupBadge.EP.cls}`}>
+                        {setupBadge[e.setup_type]?.label || e.setup_type}
+                      </span>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
                   <td className="px-4 py-3">
                     <span className="inline-block bg-blue-950 border border-blue-800 text-blue-300 text-xs px-2 py-0.5 rounded-full whitespace-nowrap">
                       {e.catalyst_number != null ? `#${e.catalyst_number}` : ''} {e.catalyst_type?.replace(/^#\d+\s*—\s*/, '')}

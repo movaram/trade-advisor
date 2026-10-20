@@ -11,6 +11,8 @@ export type VerdictStrength =
   | 'WAIT - STRONG CATALYST' | 'WAIT'
   | 'SKIP' | 'SKIP - WEAK CATALYST'
 
+export type SetupType = 'EP' | 'MOMENTUM' | 'DEP' | 'FAILED_BREAKOUT'
+
 export type HistoryEntry = {
   id: string
   ticker: string
@@ -27,6 +29,10 @@ export type HistoryEntry = {
   catalyst_strength_label?: string
   combined_score?: number
   verdict_strength?: VerdictStrength
+  // Optional: entries saved before the Setup Classification feature won't have these.
+  setup_type?: SetupType
+  setup_score?: number
+  has_action_plan?: boolean
   price_change: number
   volume_ratio: number
   full_result: any

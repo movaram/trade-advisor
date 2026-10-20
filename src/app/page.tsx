@@ -4,6 +4,10 @@ import { useHistory, parseCatalystNumber, type HistoryEntry } from '@/hooks/useH
 import HistoryTable from '@/components/HistoryTable'
 import HistoryStats from '@/components/HistoryStats'
 import Toast from '@/components/Toast'
+import SetupTypeBadge, { type SetupType } from '@/components/SetupTypeBadge'
+import MomentumChecklist, { type MomentumChecklistData } from '@/components/MomentumChecklist'
+import FailedBreakout, { type FailedBreakoutData } from '@/components/FailedBreakout'
+import ActionPlan, { type ActionPlanData } from '@/components/ActionPlan'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -14,7 +18,7 @@ type AnalystConfirmation = {
   summary: string
 }
 
-type Checklist = {
+type EpChecklist = {
   q1_ignored: boolean; q1_explanation: string
   q2_volume: boolean; q2_explanation: string
   q3_better_than_expected: boolean; q3_explanation: string
@@ -50,19 +54,30 @@ type CombinedScore = {
   verdict_strength: VerdictStrength
 }
 
+type ChecklistType = 'ep' | 'momentum' | 'failed'
+
 type Analysis = {
   catalyst_type: string
   catalyst_description: string
+  catalyst_news_date?: string | null
+  catalyst_news_summary?: string | null
+  analysis_source?: 'gemini' | 'rules'
+  analysis_note?: string
   rank: number
   rank_explanation: string
-  checklist: Checklist
-  ep_score: number
+  setup_type: SetupType
+  setup_explanation: string
+  checklist_type: ChecklistType
+  checklist: EpChecklist | MomentumChecklistData | null
+  setup_score: number
   verdict: 'TRADE' | 'WAIT' | 'SKIP'
   verdict_color: string
   key_risks: string[]
   similar_setups: string[]
   catalyst_strength: CatalystStrength
   combined_score: CombinedScore
+  failed_breakout?: FailedBreakoutData
+  action_plan: ActionPlanData
 }
 
 type NewsItem = {
@@ -71,7 +86,9 @@ type NewsItem = {
   publisher: string | null
   url?: string | null
   source_tier?: number
-  origin?: 'massive' | 'web_search'
+  origin?: 'massive' | 'finnhub' | 'web_search'
+  published_date?: string | null
+  days_from_event?: number | null
 }
 
 type Result = {
@@ -154,6 +171,23 @@ function DimensionRow({ label, score, explanation }: { label: string; score: num
 
 const tierLabel: Record<number, string> = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' }
 
+function formatNewsDate(iso: string): string {
+  // Parsed as a plain calendar date (not via new Date(iso), which would shift it by the viewer's timezone)
+  const [y, m, d] = iso.split('-').map(Number)
+  const months = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+  return `${d} ${months[m - 1]} ${y}`
+}
+
+function daysFromEventLabel(days: number): string {
+  if (days === 0) return 'в день движения'
+  return days < 0 ? `за ${-days} дн. до движения` : `через ${days} дн. после движения`
+}
+
+function daysBetween(fromIso: string, toIso: string): number {
+  const toUtc = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) }
+  return Math.round((toUtc(toIso) - toUtc(fromIso)) / 86400000)
+}
+
 const tierBadge: Record<string, string> = {
   T1: 'bg-amber-950 border-amber-600 text-amber-300',
   T2: 'bg-gray-800 border-gray-500 text-gray-300',
@@ -194,12 +228,15 @@ export default function Home() {
       catalyst_type: data.analysis.catalyst_type,
       catalyst_number: parseCatalystNumber(data.analysis.catalyst_type),
       rank: data.analysis.rank,
-      ep_score: data.analysis.ep_score,
+      ep_score: data.analysis.setup_score,
       verdict: data.analysis.verdict,
       catalyst_strength: data.analysis.catalyst_strength.total,
       catalyst_strength_label: data.analysis.catalyst_strength.label,
       combined_score: data.analysis.combined_score.total,
       verdict_strength: data.analysis.combined_score.verdict_strength,
+      setup_type: data.analysis.setup_type,
+      setup_score: data.analysis.setup_score,
+      has_action_plan: !!data.analysis.action_plan,
       price_change: data.price_change_pct,
       volume_ratio: data.volume_ratio,
       full_result: data,
@@ -319,10 +356,21 @@ export default function Home() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-xs text-gray-500 mb-1">{result.ticker} · {result.company_name}</div>
+                      {result.analysis.analysis_note && (
+                        <div className="text-[11px] text-gray-600 mb-2">{result.analysis.analysis_note}</div>
+                      )}
                       <span className="inline-block bg-blue-950 border border-blue-700 text-blue-300 text-xs font-semibold px-3 py-1 rounded-full mb-3">
                         {result.analysis.catalyst_type}
                       </span>
                       <p className="text-sm text-gray-300 leading-relaxed max-w-lg">{result.analysis.catalyst_description}</p>
+                      {result.analysis.catalyst_news_date && (
+                        <div className="text-xs text-amber-300 mt-2">
+                          📅 Новость вышла: {formatNewsDate(result.analysis.catalyst_news_date)} ({daysFromEventLabel(daysBetween(result.date, result.analysis.catalyst_news_date))})
+                        </div>
+                      )}
+                      {result.analysis.catalyst_news_summary && (
+                        <p className="text-sm text-gray-400 leading-relaxed max-w-lg mt-2">{result.analysis.catalyst_news_summary}</p>
+                      )}
                     </div>
                     <div className="text-right shrink-0">
                       <div className={`text-4xl font-bold ${rankColor(result.analysis.rank)}`}>{result.analysis.rank}<span className="text-lg text-gray-600">/10</span></div>
@@ -330,6 +378,9 @@ export default function Home() {
                   </div>
                   <p className="text-xs text-gray-500 mt-3">{result.analysis.rank_explanation}</p>
                 </div>
+
+                {/* Card 1.2 — Setup Type */}
+                <SetupTypeBadge setupType={result.analysis.setup_type} explanation={result.analysis.setup_explanation} />
 
                 {/* Card 1.5 — Catalyst Strength */}
                 <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
@@ -383,25 +434,42 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Card 3 — EP Checklist */}
-                <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
-                  <h2 className="text-xs uppercase tracking-wide text-gray-500 mb-1">EP Checklist</h2>
-                  <ChecklistRow label="Q1: Stock was ignored before catalyst" pass={result.analysis.checklist.q1_ignored} explanation={result.analysis.checklist.q1_explanation} />
-                  <ChecklistRow label="Q2: +5%+ on 2x volume" pass={result.analysis.checklist.q2_volume} explanation={result.analysis.checklist.q2_explanation} />
-                  <ChecklistRow label="Q3: Better than expected" pass={result.analysis.checklist.q3_better_than_expected} explanation={result.analysis.checklist.q3_explanation} />
-                  <ChecklistRow label="Q4: Narrative for new buyers" pass={result.analysis.checklist.q4_narrative} explanation={result.analysis.checklist.q4_explanation} />
-                  <ChecklistRow label="Q5: Technical position" pass={result.analysis.checklist.q5_technical} explanation={result.analysis.checklist.q5_explanation} />
-                  {result.analysis.checklist.analyst_confirmation && (
-                    <div className="mt-3 pt-3 border-t border-gray-800 flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-xs uppercase tracking-wide text-gray-500">Analyst Confirmation:</span>
-                      <span className="font-semibold text-white">{result.analysis.checklist.analyst_confirmation.analyst_count} analysts</span>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${tierBadge[result.analysis.checklist.analyst_confirmation.highest_tier] || tierBadge.T3}`}>
-                        {result.analysis.checklist.analyst_confirmation.highest_tier}
-                      </span>
-                      <span className="text-green-400 font-semibold">max PT +{result.analysis.checklist.analyst_confirmation.max_pt_raise_pct}%</span>
-                    </div>
-                  )}
-                </div>
+                {/* Card 3 — dynamic checklist based on setup type */}
+                {result.analysis.checklist_type === 'ep' && result.analysis.checklist && (
+                  <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
+                    <h2 className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                      {result.analysis.setup_type === 'DEP' ? 'DEP Checklist' : 'EP Checklist'}
+                    </h2>
+                    {(() => {
+                      const cl = result.analysis.checklist as EpChecklist
+                      return (
+                        <>
+                          <ChecklistRow label="Q1: Stock was ignored before catalyst" pass={cl.q1_ignored} explanation={cl.q1_explanation} />
+                          <ChecklistRow label="Q2: +5%+ on 2x volume" pass={cl.q2_volume} explanation={cl.q2_explanation} />
+                          <ChecklistRow label="Q3: Better than expected" pass={cl.q3_better_than_expected} explanation={cl.q3_explanation} />
+                          <ChecklistRow label="Q4: Narrative for new buyers" pass={cl.q4_narrative} explanation={cl.q4_explanation} />
+                          <ChecklistRow label="Q5: Technical position" pass={cl.q5_technical} explanation={cl.q5_explanation} />
+                          {cl.analyst_confirmation && (
+                            <div className="mt-3 pt-3 border-t border-gray-800 flex flex-wrap items-center gap-2 text-sm">
+                              <span className="text-xs uppercase tracking-wide text-gray-500">Analyst Confirmation:</span>
+                              <span className="font-semibold text-white">{cl.analyst_confirmation.analyst_count} analysts</span>
+                              <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${tierBadge[cl.analyst_confirmation.highest_tier] || tierBadge.T3}`}>
+                                {cl.analyst_confirmation.highest_tier}
+                              </span>
+                              <span className="text-green-400 font-semibold">max PT +{cl.analyst_confirmation.max_pt_raise_pct}%</span>
+                            </div>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
+                )}
+                {result.analysis.checklist_type === 'momentum' && result.analysis.checklist && (
+                  <MomentumChecklist checklist={result.analysis.checklist as MomentumChecklistData} />
+                )}
+                {result.analysis.checklist_type === 'failed' && result.analysis.failed_breakout && (
+                  <FailedBreakout data={result.analysis.failed_breakout} />
+                )}
 
                 {/* Card 4 — Verdict */}
                 {v && (
@@ -423,11 +491,11 @@ export default function Home() {
                       </div>
                       <div>
                         <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                          <span>EP Score</span>
-                          <span>{result.analysis.ep_score}/5</span>
+                          <span>Setup Score ({result.analysis.setup_type === 'MOMENTUM' ? 'Momentum' : result.analysis.setup_type})</span>
+                          <span>{result.analysis.setup_score}/5</span>
                         </div>
                         <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                          <div className="h-full rounded-full bg-blue-500" style={{ width: `${(result.analysis.ep_score / 5) * 100}%` }} />
+                          <div className="h-full rounded-full bg-blue-500" style={{ width: `${(result.analysis.setup_score / 5) * 100}%` }} />
                         </div>
                       </div>
                     </div>
@@ -445,6 +513,12 @@ export default function Home() {
                   </div>
                 )}
 
+                {/* Card 4.5 — Action Plan */}
+                <ActionPlan
+                  plan={result.analysis.action_plan}
+                  isSkip={result.analysis.combined_score.verdict_strength.startsWith('SKIP')}
+                />
+
                 {/* Card 5 — News */}
                 <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
                   <button onClick={() => setNewsOpen(o => !o)} className="w-full flex items-center justify-between text-xs uppercase tracking-wide text-gray-500">
@@ -453,13 +527,23 @@ export default function Home() {
                   </button>
                   {newsOpen && (
                     <div className="mt-3 space-y-3">
-                      {result.news.length === 0 && <div className="text-sm text-gray-500">No news found for this date.</div>}
+                      {result.news.length === 0 && <div className="text-sm text-gray-500">No news found within 10 days before / 3 days after this date.</div>}
                       {result.news.map((n, i) => (
                         <div key={i} className="border-b border-gray-800 last:border-0 pb-3 last:pb-0">
-                          <div className="text-sm font-medium text-gray-200">{n.title}</div>
+                          <div className="text-sm font-medium text-gray-200">
+                            {n.url ? <a href={n.url} target="_blank" rel="noopener noreferrer" className="hover:underline">{n.title}</a> : n.title}
+                          </div>
+                          {n.description && <p className="text-xs text-gray-400 mt-1 leading-relaxed">{n.description}</p>}
                           <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+                            {n.published_date && (
+                              <span className={n.published_date === result.analysis.catalyst_news_date ? 'text-amber-300 font-semibold' : 'text-gray-400'}>
+                                {formatNewsDate(n.published_date)}
+                                {n.days_from_event != null && ` · ${daysFromEventLabel(n.days_from_event)}`}
+                              </span>
+                            )}
                             {n.publisher && <span>{n.publisher}</span>}
                             {n.source_tier != null && <span className="text-gray-600">· {tierLabel[n.source_tier] || `Tier ${n.source_tier}`}</span>}
+                            {n.origin === 'finnhub' && <span className="text-gray-600">· via Finnhub</span>}
                             {n.origin === 'web_search' && <span className="text-gray-600">· via web search</span>}
                           </div>
                         </div>
