@@ -322,7 +322,7 @@ scenario briefly or be empty strings.
 
 async def massive_get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
     if not MASSIVE_API_KEY:
-        raise HTTPException(status_code=500, detail="MASSIVE_API_KEY is not set in backend/.env")
+        raise HTTPException(status_code=500, detail="MASSIVE_API_KEY is not set — add it in Vercel → Settings → Environment Variables (or backend/.env locally)")
     try:
         r = await client.get(f"{MASSIVE_BASE_URL}{path}", params={**params, "apiKey": MASSIVE_API_KEY})
     except httpx.RequestError:
@@ -330,7 +330,7 @@ async def massive_get(client: httpx.AsyncClient, path: str, params: dict) -> dic
     if r.status_code == 429:
         raise HTTPException(status_code=429, detail="Massive rate limit reached, try again shortly")
     if r.status_code == 401:
-        raise HTTPException(status_code=502, detail="Massive API key rejected — check MASSIVE_API_KEY in backend/.env")
+        raise HTTPException(status_code=502, detail="Massive API key rejected — check MASSIVE_API_KEY in Vercel Environment Variables (or backend/.env locally)")
     r.raise_for_status()
     return r.json()
 
