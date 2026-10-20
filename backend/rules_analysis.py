@@ -81,6 +81,44 @@ CATALYST_RULES: list[tuple[int, str, list[str]]] = [
 
 NEGATIVE_CATALYSTS = {35, 36, 37}
 
+# Plain-Russian description of each rule category, for the "what happened" sentence.
+CATEGORY_RU = {
+    1: "квартальный отчёт лучше ожиданий и сильный прогноз на будущее",
+    2: "сильный рост выручки",
+    3: "квартальный отчёт лучше прогнозов аналитиков",
+    4: "повышение рейтинга / целевой цены аналитиками",
+    5: "начало покрытия аналитиками",
+    6: "подписан контракт / сделка",
+    7: "компания объявила о покупке другой компании",
+    8: "компанию собираются купить (поглощение)",
+    9: "слухи о продаже или поглощении компании",
+    10: "одобрение препарата FDA",
+    11: "ускоренное одобрение FDA",
+    12: "статус Fast Track от FDA",
+    13: "статус Breakthrough Therapy от FDA",
+    14: "соглашение SPA с FDA",
+    15: "успешные результаты 3-й фазы клинических испытаний",
+    16: "положительные данные 2-й фазы испытаний",
+    17: "положительные данные 1-й фазы / разрешение IND",
+    19: "технологический прорыв / рекорд",
+    20: "запуск нового продукта",
+    21: "смена CEO / руководства",
+    22: "изменение государственной политики",
+    23: "государственный контракт",
+    24: "патентная сделка / урегулирование спора",
+    25: "крупный обратный выкуп акций",
+    26: "тендерное предложение (dutch auction)",
+    28: "включение в индекс (S&P / Russell)",
+    31: "IPO по верхней границе / увеличенное",
+    35: "сбой / отзыв продукции (негатив)",
+    36: "иск акционеров / обвинения в мошенничестве (негатив)",
+    37: "обратный сплит акций (негатив)",
+    38: "необязывающее соглашение / неназванный партнёр (слабый сигнал)",
+    43: "активист-инвестор купил долю",
+}
+
+RU_MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
 # Categories that describe the same underlying event at different strengths; their news is pooled
 # so e.g. ten "beat estimates" articles plus two that also mention raised guidance add up to one
 # earnings catalyst, labelled with the most specific category any of them matched.
@@ -154,13 +192,13 @@ EPS_PAIR_PATTERNS = [
 ]
 
 
-def _eps_beat_pct(texts: list[str]) -> Optional[float]:
-    """Largest parsed EPS surprise (%) across the catalyst news, or None if no actual-vs-estimate
-    pair could be read. Only looks at sentences that are actually about per-share earnings so a
-    revenue pair ("$13.58B vs $12.4B") isn't mistaken for EPS."""
+def _eps_surprise(texts: list[str]) -> Optional[tuple[float, float, float]]:
+    """Largest parsed EPS surprise across the catalyst news as (surprise %, actual, estimate), or
+    None if no actual-vs-estimate pair could be read. Only looks at sentences that are actually
+    about per-share earnings so a revenue pair ("$13.58B vs $12.4B") isn't mistaken for EPS."""
     best = None
     for text in texts:
-        for sentence in re.split(r"(?<=[.;])\s+", text):
+        for sentence in re.split(r"(?<=[.;])(?<!vs\.)\s+", text):
             if not re.search(r"(eps|per share|cents|earnings of)", sentence):
                 continue
             if re.search(r"\b(billion|million|bn)\b", sentence) and not re.search(r"(eps|per share)", sentence):
@@ -174,9 +212,18 @@ def _eps_beat_pct(texts: list[str]) -> Optional[float]:
                         pct = 999.0 if actual > estimate else -999.0
                     else:
                         pct = (actual - estimate) / estimate * 100
-                    if best is None or pct > best:
-                        best = pct
+                    if best is None or pct > best[0]:
+                        best = (pct, actual, estimate)
     return best
+
+
+def _eps_beat_pct(texts: list[str]) -> Optional[float]:
+    surprise = _eps_surprise(texts)
+    return surprise[0] if surprise else None
+
+
+def _usd(value: float) -> str:
+    return f"-${-value:.2f}" if value < 0 else f"${value:.2f}"
 
 
 def _largest_dollar_amount(texts: list[str]) -> Optional[float]:
@@ -330,15 +377,7 @@ def analyze_with_rules(md: MarketData) -> dict:
     # --- catalyst text ---
     if category:
         catalyst_type = f"#{category[0]} — {category[1]}"
-        when = _days_label(days_from_event)
-        facts = []
-        if eps_beat is not None:
-            facts.append("прибыль на акцию выше прогноза " + ("в разы" if eps_beat >= 999 else f"на {eps_beat:.0f}%"))
-        facts.append(f"акция {md.price_change_pct:+.1f}% на объёме {md.volume_ratio:.1f}x от среднего")
-        catalyst_description = (
-            f"{catalyst_news.get('title')} ({catalyst_news.get('publisher') or 'источник неизвестен'}, {when}). "
-            + "; ".join(facts).capitalize() + "."
-        )
+        catalyst_description = _explain(md, category, catalyst_news, days_from_event, eps_beat, cat_texts, relevant)
     else:
         catalyst_type = "— Катализатор не найден"
         catalyst_description = (
@@ -388,6 +427,7 @@ def analyze_with_rules(md: MarketData) -> dict:
         "catalyst_description": catalyst_description,
         "catalyst_news_date": catalyst_news.get("published_date") if catalyst_news else None,
         "catalyst_news_summary": catalyst_news.get("description") if catalyst_news else None,
+        "catalyst_news_url": catalyst_news.get("url") if catalyst_news else None,
         "rank": 0,  # filled in by finalize_rules_analysis once the verdict is known
         "rank_explanation": "",
         "setup_type": setup_type,
@@ -430,6 +470,45 @@ def finalize_rules_analysis(analysis: dict, md: MarketData, setup_score: float, 
                 f"Ждать удержания выше ${md.low:.2f} и пробоя ${md.high:.2f} на объёме ≥1.5x; "
                 "либо новую базу 2–6 недель над 21EMA."
             )
+
+
+def _ru_date(iso: Optional[str]) -> str:
+    if not iso:
+        return "дата неизвестна"
+    y, m, d = (int(x) for x in iso.split("-"))
+    return f"{d} {RU_MONTHS[m - 1]} {y}"
+
+
+def _explain(md: MarketData, category, catalyst_news: dict, days_from_event, eps_beat, cat_texts, relevant) -> str:
+    """Plain-Russian 'what happened / when / why it moved' paragraph, built only from facts the
+    rules actually found, so every claim in it can be traced to a number or a news item."""
+    what = CATEGORY_RU.get(category[0], category[1])
+    when = f"{_ru_date(catalyst_news.get('published_date'))} ({_days_label(days_from_event)})"
+    if days_from_event == -1:
+        when += " — скорее всего вечером после закрытия рынка, поэтому реакция пришлась на следующий день"
+
+    reasons = []
+    surprise = _eps_surprise(cat_texts) if eps_beat is not None else None
+    if surprise:
+        pct, actual, estimate = surprise
+        size = "в разы выше" if pct >= 300 else f"на {pct:.0f}% выше" if pct > 0 else f"на {-pct:.0f}% ниже"
+        reasons.append(f"прибыль на акцию {_usd(actual)} против прогноза аналитиков {_usd(estimate)} — {size} ожиданий")
+    if category[0] == 1 or any(re.search(GUIDE_UP, t) for t in cat_texts):
+        reasons.append("компания дала прогноз на следующий период выше ожиданий рынка")
+    amount = _largest_dollar_amount(cat_texts) if category[0] not in (1, 2, 3) else None
+    if amount and md.market_cap:
+        reasons.append(f"сумма сделки ≈${amount / 1e6:,.0f} млн — около {amount / md.market_cap * 100:.1f}% капитализации компании")
+    theme = next((m.group(0) for n in relevant if (m := re.search(NARRATIVE_WORDS, _text(n)))), None)
+    if theme:
+        reasons.append(f"новость связана с популярной темой («{theme}»), что привлекает новых покупателей")
+    if md.volume_ratio >= 2:
+        reasons.append(f"объём торгов {md.volume_ratio:.1f}x от среднего показывает, что покупали крупные игроки")
+    direction = "выросла" if md.price_change_pct >= 0 else "упала"
+
+    text = f"Что произошло: {what}. Когда: {when}. "
+    text += f"Почему акция {direction} на {abs(md.price_change_pct):.1f}%: " + ("; ".join(reasons) if reasons else "конкретных цифр в новостях не найдено — см. карточку News") + ". "
+    text += f"Источник: «{catalyst_news.get('title')}» ({catalyst_news.get('publisher') or 'источник неизвестен'})."
+    return text
 
 
 def _days_label(days: Optional[int]) -> str:

@@ -48,7 +48,7 @@ function ScoreDots({ score }: { score: number }) {
 }
 
 function toCsv(rows: HistoryEntry[]): string {
-  const header = ['Ticker', 'EventDate', 'SetupType', 'Catalyst#', 'CatalystName', 'Rank', 'SetupScore', 'CatalystStrength', 'CombinedScore', 'Verdict', 'PriceChange%', 'VolumeRatio']
+  const header = ['Ticker', 'Company', 'EventDate', 'PriceChange%', 'VolumeRatio', 'Catalyst#', 'CatalystName', 'CatalystNewsDate', 'WhyItMoved', 'CatalystNewsSummary', 'CatalystNewsLink', 'SetupType', 'Rank', 'SetupScore', 'CatalystStrength', 'CombinedScore', 'Verdict', 'Analyzer']
   const escape = (v: any) => {
     const s = String(v ?? '')
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -56,10 +56,16 @@ function toCsv(rows: HistoryEntry[]): string {
   const catalystName = (e: HistoryEntry) => e.catalyst_type?.replace(/^#\d+\s*—\s*/, '') ?? ''
   const lines = [header.join(',')]
   for (const e of rows) {
+    const a = e.full_result?.analysis ?? {}
+    // The rule engine names the exact article; Gemini only gives a date, so fall back to that day's first article
+    const catalystUrl = a.catalyst_news_url
+      ?? (e.full_result?.news ?? []).find((n: any) => n.published_date === a.catalyst_news_date && n.url)?.url
     lines.push([
-      escape(e.ticker), escape(e.event_date), escape(e.setup_type ?? ''), escape(e.catalyst_number ?? ''), escape(catalystName(e)),
-      escape(e.rank), escape(e.ep_score), escape(e.catalyst_strength ?? ''), escape(e.combined_score ?? ''),
-      escape(e.verdict_strength ?? e.verdict), escape(e.price_change), escape(e.volume_ratio),
+      escape(e.ticker), escape(e.company_name), escape(e.event_date), escape(e.price_change), escape(e.volume_ratio),
+      escape(e.catalyst_number ?? ''), escape(catalystName(e)), escape(a.catalyst_news_date ?? ''),
+      escape(a.catalyst_description ?? ''), escape(a.catalyst_news_summary ?? ''), escape(catalystUrl ?? ''),
+      escape(e.setup_type ?? ''), escape(e.rank), escape(e.ep_score), escape(e.catalyst_strength ?? ''),
+      escape(e.combined_score ?? ''), escape(e.verdict_strength ?? e.verdict), escape(a.analysis_source ?? ''),
     ].join(','))
   }
   return lines.join('\n')
@@ -67,7 +73,8 @@ function toCsv(rows: HistoryEntry[]): string {
 
 function downloadCsv(rows: HistoryEntry[]) {
   const csv = toCsv(rows)
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  // The BOM makes Excel open the file as UTF-8 -- without it the Russian explanations show as gibberish
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

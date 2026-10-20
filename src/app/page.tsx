@@ -61,6 +61,7 @@ type Analysis = {
   catalyst_description: string
   catalyst_news_date?: string | null
   catalyst_news_summary?: string | null
+  catalyst_news_url?: string | null
   analysis_source?: 'gemini' | 'rules'
   analysis_note?: string
   rank: number

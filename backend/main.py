@@ -244,7 +244,7 @@ exact shape (this example is an EP/DEP setup -- see the notes below for how MOME
 FAILED_BREAKOUT differ):
 {
   "catalyst_type": "#N — Name",
-  "catalyst_description": "1-2 sentence explanation in Russian",
+  "catalyst_description": "Plain Russian for a non-trader, exactly three parts: 'Что произошло: ... Когда: <date of the news, and whether it was after the close the day before> ... Почему акция выросла/упала на X%: <the concrete reasons with real numbers from the news: EPS/revenue vs estimates, guidance, deal size, theme, volume>.' Use only facts present in the data you're given",
   "catalyst_news_date": "YYYY-MM-DD publication date of the news item that is the catalyst, or null if no news item is the catalyst",
   "catalyst_news_summary": "2-3 sentences in Russian retelling what that news actually said (numbers, guidance, deal terms), or null",
   "rank": 7,

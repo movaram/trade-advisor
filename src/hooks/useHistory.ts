@@ -2,7 +2,12 @@
 import { useCallback, useEffect, useState } from 'react'
 
 const STORAGE_KEY = 'ep_analyzer_history'
-const MAX_ENTRIES = 200
+const MAX_ENTRIES = 500
+// localStorage gives the site ~5M characters. A full result is ~45K, almost all of it the news
+// list, so only the newest entries keep every news item; older ones keep the analysis (with the
+// catalyst explanation) plus just the catalyst news item (~5K). 20 full + 480 compact ≈ 3.3M,
+// where storing everything in full would silently stop saving after ~110 entries.
+const FULL_NEWS_ENTRIES = 20
 
 export type Verdict = 'TRADE' | 'WAIT' | 'SKIP'
 
@@ -55,11 +60,29 @@ function loadHistory(): HistoryEntry[] {
   }
 }
 
+function compact(entry: HistoryEntry): HistoryEntry {
+  const result = entry.full_result
+  if (!result?.news) return entry
+  const { catalyst_news_url: catalystUrl, catalyst_news_date: catalystDate } = result.analysis ?? {}
+  const news = result.news
+    .filter((n: any) => catalystUrl ? n.url === catalystUrl : catalystDate && n.published_date === catalystDate && n.url)
+    .slice(0, 1)
+  return { ...entry, full_result: { ...result, news } }
+}
+
 function persist(entries: HistoryEntry[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
-  } catch {
-    // localStorage can throw (private mode, quota) -- history just won't persist across reloads
+  // On a quota error, compact more and more entries; as a last resort drop the oldest ones, so
+  // a new analysis is always saved rather than the whole write failing silently.
+  for (let keepFull = FULL_NEWS_ENTRIES, keepCount = entries.length; keepCount > 0; ) {
+    const stored = entries.slice(0, keepCount).map((e, i) => (i < keepFull ? e : compact(e)))
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
+      return
+    } catch {
+      // private mode or quota
+      if (keepFull > 0) keepFull = 0
+      else keepCount = Math.floor(keepCount * 0.9)
+    }
   }
 }
 
